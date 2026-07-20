@@ -41,9 +41,11 @@ def get_upstox_client() -> upstox_client.ApiClient:
     Returns a configured ApiClient using the saved access token.
     Works with both daily OAuth tokens and long-lived Analytics tokens.
     """
-    token = os.environ.get("UPSTOX_ACCESS_TOKEN")
-    if not token and TOKEN_FILE.exists():
+    token = None
+    if TOKEN_FILE.exists():
         token = TOKEN_FILE.read_text().strip()
+    if not token:
+        token = os.environ.get("UPSTOX_ACCESS_TOKEN")
     if not token:
         raise ValueError(
             f"No Upstox access token found. Set UPSTOX_ACCESS_TOKEN env var "

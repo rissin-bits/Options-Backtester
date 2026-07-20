@@ -7,3 +7,18 @@ __pycache__/
 options_data/*
 !options_data/**/
 !options_data/**/.gitkeep
+
+# ─── Credentials ───
+# Never commit broker tokens. The Upstox Analytics token is valid for a year,
+# so a single push to a public repo is a full compromise.
+upstox_token.txt
+*_token.txt
+0PRM3MRMQA-100.txt
+.env
+.env.*
+
+# ─── Local tooling ───
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+.claude/launch.json

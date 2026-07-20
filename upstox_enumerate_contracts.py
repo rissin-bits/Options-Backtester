@@ -153,7 +153,7 @@ def run(underlyings: list, from_date: date):
                         expiry_str,
                         float(getattr(c, "strike_price", 0)),
                         opt_type,
-                        str(c.expired_instrument_key),
+                        f"{c.segment}|{c.exchange_token}|{expiry_str[8:10]}-{expiry_str[5:7]}-{expiry_str[0:4]}",
                     ))
                     if conn.total_changes > 0:
                         inserted += 1
