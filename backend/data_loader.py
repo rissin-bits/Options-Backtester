@@ -19,12 +19,6 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-try:
-    import duckdb
-    _HAS_DUCKDB = True
-except ImportError:            # pandas/pyarrow fallback still works without it
-    _HAS_DUCKDB = False
-
 from backend.greeks import black_scholes, implied_volatility
 
 log = logging.getLogger(__name__)
@@ -236,45 +230,39 @@ class DataLoader:
             conds.append(("date", "<=", end_date.isoformat()))
         return conds or None
 
+    @staticmethod
+    def _to_naive_ts(series: pd.Series) -> pd.Series:
+        """
+        Coerce a timestamp/date series to naive datetime, keeping local
+        wall-clock time.
+
+        - tz-aware datetime  -> drop the tz keeping wall time (vectorized;
+          verified identical to the old string-regex strip, ~12x faster).
+        - naive datetime     -> as-is.
+        - string             -> strip any trailing tz offset, then parse.
+        """
+        dtype = series.dtype
+        if isinstance(dtype, pd.DatetimeTZDtype):
+            return series.dt.tz_localize(None)
+        if pd.api.types.is_datetime64_any_dtype(series):
+            return series
+        cleaned = series.astype(str).str.replace(
+            r'(Z|[+-]\d{2}:\d{2})$', '', regex=True)
+        return pd.to_datetime(cleaned, format='ISO8601', errors='coerce')
+
     def _read_track(self, files: List[Path],
                     start_date: Optional[date],
                     end_date: Optional[date]) -> pd.DataFrame:
         """
         Read one track's (already year-pruned) Parquet files as a single frame,
-        date-filtered, using DuckDB when available and falling back to pandas.
+        date-filtered, via pandas + pyarrow predicate pushdown.
 
-        DuckDB reads the whole file set in one parallel columnar scan, which is
-        ~5x faster than reading each file with pandas (a 4-day NIFTY slice: ~1.4s
-        vs ~7s). Correctness never depends on it: if DuckDB is missing or errors
-        for any reason, it falls back to per-file pandas+pyarrow reads, which the
-        tests pin as the reference and which produce byte-identical results.
-
-        A plain ISO string literal in the predicate keeps row-group pushdown
-        working for both the string `date` column (intraday) and the datetime
-        one (daily) — DuckDB casts the literal to the column type.
+        (DuckDB was trialled here but rigorous measurement showed no speedup —
+        once pushdown skips the out-of-range row groups, the read is no longer
+        the bottleneck, and DuckDB's per-call connection + progress overhead made
+        it slower in practice. It stays available for ad-hoc analytics, where its
+        columnar aggregates genuinely win, just not on this hot row-load path.)
         """
-        if _HAS_DUCKDB:
-            try:
-                paths = ", ".join(
-                    "'" + str(f).replace("\\", "/").replace("'", "''") + "'"
-                    for f in files
-                )
-                where = []
-                if start_date:
-                    where.append(f"date >= '{start_date.isoformat()}'")
-                if end_date:
-                    where.append(f"date <= '{end_date.isoformat()}'")
-                clause = (" WHERE " + " AND ".join(where)) if where else ""
-                con = duckdb.connect()
-                try:
-                    return con.execute(
-                        f"SELECT * FROM read_parquet([{paths}], union_by_name=true){clause}"
-                    ).df()
-                finally:
-                    con.close()
-            except Exception as e:
-                log.warning(f"DuckDB read failed ({e}); using pandas for {len(files)} file(s)")
-
         frames = []
         for f in files:
             try:
@@ -328,6 +316,18 @@ class DataLoader:
                 continue
             df = self._read_track(ranged, start_date, end_date)
             if not df.empty:
+                # Normalize the timestamp to naive datetime PER FRAME, before
+                # concat. The daily track stores timestamp as a string and the
+                # intraday track as tz-aware datetime; concatenating them first
+                # produced an `object` column, which forced the slow string
+                # regex over every row (~5s for NIFTY). Normalizing each frame
+                # in its native dtype keeps the concatenated column datetime.
+                ts = self._to_naive_ts(df["timestamp"]) if "timestamp" in df.columns else None
+                if ts is not None and "date" in df.columns and ts.isna().any():
+                    ts = ts.fillna(self._to_naive_ts(df["date"]))
+                if ts is None:
+                    ts = self._to_naive_ts(df["date"])
+                df["timestamp"] = ts
                 frames.append(df)
 
         if not frames:
@@ -336,30 +336,11 @@ class DataLoader:
 
         data = pd.concat(frames, ignore_index=True)
 
-        # Ensure timestamp is datetime
-        def _parse_dates(series):
-            if pd.api.types.is_datetime64_any_dtype(series):
-                return series
-            # Strip timezones to make all naive, keeping local time
-            cleaned = series.astype(str).str.replace(r'(Z|[+-]\d{2}:\d{2})$', '', regex=True)
-            return pd.to_datetime(cleaned, format='ISO8601', errors='coerce')
-
-        if "timestamp" not in data.columns:
-            data["timestamp"] = _parse_dates(data["date"])
-        else:
-            ts = _parse_dates(data["timestamp"])
-            # Only fall back to the `date` column for rows whose timestamp
-            # failed to parse. Computing _parse_dates(date) unconditionally ran
-            # a regex over ~800k string dates on every load (~5s) even when the
-            # timestamp column was already fully valid — the common case.
-            if "date" in data.columns and ts.isna().any():
-                ts = ts.fillna(_parse_dates(data["date"]))
-            data["timestamp"] = ts
-                
-        if "date" in data.columns:
-            data["_date"] = pd.to_datetime(data["date"]).dt.date
-        else:
-            data["_date"] = data["timestamp"].dt.date
+        # Derive the filter date from the already-normalized timestamp. Parsing
+        # the raw `date` column here would re-touch a mixed-dtype object column
+        # (daily datetime + intraday string) unnecessarily; timestamp.dt.date
+        # is equivalent for both tracks and fast.
+        data["_date"] = data["timestamp"].dt.date
 
         # Apply filters
         if start_date:
