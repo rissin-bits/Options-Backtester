@@ -4,6 +4,7 @@ pydantic>=2.0
 pandas
 numpy
 pyarrow
+duckdb        # optional accelerator for Parquet reads/analytics; loader falls back to pandas
 websockets
 scipy
 py_vollib
