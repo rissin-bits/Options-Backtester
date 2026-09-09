@@ -55,7 +55,7 @@ const BS_BUTTON = {
   minWidth: '26px',
 };
 
-export default function OptionsChain({ onAddLeg }) {
+export default function OptionsChain({ onAddLeg, onChainUpdate }) {
   const [underlyings, setUnderlyings] = useState([]);
   const [selectedUnderlying, setSelectedUnderlying] = useState('NIFTY');
   
@@ -192,6 +192,44 @@ export default function OptionsChain({ onAddLeg }) {
       rowVirtualizer.scrollToIndex(Math.max(0, atmIndex - 10), { align: 'start' });
     }
   }, [chainData, spotPrice]); // Removed rowVirtualizer dependency to avoid scrolling on every render
+
+  // Publish the live chain upward so the Strategy Builder can source real spot,
+  // real strikes and real premiums instead of its old hardcoded 22000 / ₹100.
+  useEffect(() => {
+    if (!onChainUpdate) return;
+    if (!chainData.length) return;
+
+    const strikes = chainData.map(r => r.strike).sort((a, b) => a - b);
+
+    // Derive the strike interval from the data rather than assuming 50 —
+    // NIFTY steps by 50, BANKNIFTY by 100, SENSEX by 100. Use the smallest
+    // positive gap, which is robust to occasional missing strikes.
+    let step = Infinity;
+    for (let i = 1; i < strikes.length; i++) {
+      const gap = strikes[i] - strikes[i - 1];
+      if (gap > 0 && gap < step) step = gap;
+    }
+    if (!Number.isFinite(step)) step = 50;
+
+    // Quote lookup: "<strike>_<CE|PE>" -> the chain row, for premium/greeks.
+    const quotes = {};
+    chainData.forEach(r => {
+      if (r.CE) quotes[`${r.strike}_CE`] = r.CE;
+      if (r.PE) quotes[`${r.strike}_PE`] = r.PE;
+    });
+
+    const expiryInfo = expiries.find(e => e.expiry === selectedExpiry);
+
+    onChainUpdate({
+      underlying: selectedUnderlying,
+      spotPrice,
+      strikes,
+      step,
+      quotes,
+      expiry: selectedExpiry,
+      dte: expiryInfo?.dte ?? null,
+    });
+  }, [chainData, spotPrice, selectedUnderlying, selectedExpiry, expiries, onChainUpdate]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>

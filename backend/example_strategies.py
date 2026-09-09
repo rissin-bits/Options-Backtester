@@ -14,6 +14,17 @@ from backend.strategy import (
 from typing import List, Union, Optional
 
 
+def _parse_hhmm(value, fallback):
+    """Parse a 'HH:MM' string into a datetime.time; fall back on bad input."""
+    if isinstance(value, time):
+        return value
+    try:
+        h, m = str(value).split(":")[:2]
+        return time(int(h), int(m))
+    except (ValueError, AttributeError):
+        return fallback
+
+
 # ──────────────────────────────────────────────────────────────
 # 1. Short Straddle — sell ATM CE + PE at 9:20, exit at 15:15
 # ──────────────────────────────────────────────────────────────
@@ -311,9 +322,15 @@ class VWAPBreakoutStrategy(Strategy):
     name = "VWAP Breakout"
     description = "Buy CE/PE based on VWAP crossover direction."
 
-    def __init__(self):
+    def __init__(self, entry_after="09:30", square_off_time="15:15",
+                 stop_loss_pct=3.0, target_pct=5.0, lots=1):
         self.prev_spot = None
         self.prev_vwap = None
+        self.entry_after = _parse_hhmm(entry_after, time(9, 30))
+        self.square_off = _parse_hhmm(square_off_time, time(15, 15))
+        self.stop_loss_pct = abs(float(stop_loss_pct))
+        self.target_pct = abs(float(target_pct))
+        self.lots = int(lots)
 
     def required_indicators(self):
         return [
@@ -327,13 +344,13 @@ class VWAPBreakoutStrategy(Strategy):
             return None
 
         # Square off time
-        if ctx.time_of_day >= time(15, 15):
+        if ctx.time_of_day >= self.square_off:
             if ctx.positions:
                 return "SQUARE_OFF_ALL"
             return None
 
         # Too early
-        if ctx.time_of_day < time(9, 30):
+        if ctx.time_of_day < self.entry_after:
             self.prev_spot = ctx.spot_price
             self.prev_vwap = vwap_val
             return None
@@ -349,9 +366,9 @@ class VWAPBreakoutStrategy(Strategy):
                         pnl_pct = ((pos.entry_price - pos.current_price)
                                    / pos.entry_price) * 100
 
-                    if pnl_pct <= -3.0:  # Stop loss
+                    if self.stop_loss_pct and pnl_pct <= -self.stop_loss_pct:
                         return "SQUARE_OFF_ALL"
-                    if pnl_pct >= 5.0:   # Target
+                    if self.target_pct and pnl_pct >= self.target_pct:
                         return "SQUARE_OFF_ALL"
             self.prev_spot = ctx.spot_price
             self.prev_vwap = vwap_val
@@ -363,13 +380,13 @@ class VWAPBreakoutStrategy(Strategy):
             if self.prev_spot <= self.prev_vwap and ctx.spot_price > vwap_val:
                 self.prev_spot = ctx.spot_price
                 self.prev_vwap = vwap_val
-                return [Order(Side.BUY, OptionType.CE, StrikeSelection.ATM)]
+                return [Order(Side.BUY, OptionType.CE, StrikeSelection.ATM, quantity=self.lots)]
 
             # Bearish crossover: prev above VWAP, now below
             if self.prev_spot >= self.prev_vwap and ctx.spot_price < vwap_val:
                 self.prev_spot = ctx.spot_price
                 self.prev_vwap = vwap_val
-                return [Order(Side.BUY, OptionType.PE, StrikeSelection.ATM)]
+                return [Order(Side.BUY, OptionType.PE, StrikeSelection.ATM, quantity=self.lots)]
 
         self.prev_spot = ctx.spot_price
         self.prev_vwap = vwap_val

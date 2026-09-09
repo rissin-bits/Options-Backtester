@@ -6,25 +6,34 @@ export default function PayoffChart({ strategyPositions, underlyingPrice, lotSiz
   // strategyPositions: Array of { strike, type: 'CE'|'PE', side: 'BUY'|'SELL', premium, qty }
   
   const { minStrike, maxStrike } = useMemo(() => {
+    const spot = Number(underlyingPrice) > 0 ? Number(underlyingPrice) : 0;
     if (!strategyPositions || strategyPositions.length === 0) {
-      return { minStrike: underlyingPrice * 0.9, maxStrike: underlyingPrice * 1.1 };
+      return { minStrike: spot * 0.9, maxStrike: spot * 1.1 };
     }
-    const strikes = strategyPositions.map(p => p.strike);
-    let minS = Math.min(...strikes, underlyingPrice);
-    let maxS = Math.max(...strikes, underlyingPrice);
-    
-    if (minS === maxS) {
-      minS = minS * 0.98;
-      maxS = maxS * 1.02;
+    // Only fold spot into the range when it's a real price. A zero/stale spot
+    // used to drag the x-axis down to 0 and squash the payoff into a spike.
+    const values = strategyPositions.map(p => Number(p.strike)).filter(Number.isFinite);
+    if (spot > 0) values.push(spot);
+    if (!values.length) return { minStrike: 0, maxStrike: 1 };
+
+    let minS = Math.min(...values);
+    let maxS = Math.max(...values);
+
+    // Guarantee a span wide enough to actually show the payoff profile.
+    // A straddle puts every leg on one strike, so the raw span is just the
+    // gap between spot and that strike — a few points wide, which rendered
+    // as a vertical spike with both breakevens off-screen.
+    const center = spot > 0 ? spot : (minS + maxS) / 2;
+    const minSpan = Math.abs(center) * 0.10 || 1;   // ±5% of spot
+    if (maxS - minS < minSpan) {
+      const mid = (minS + maxS) / 2;
+      minS = mid - minSpan / 2;
+      maxS = mid + minSpan / 2;
     }
-    
-    return {
-      minStrike: minS,
-      maxStrike: maxS
-    };
+    return { minStrike: minS, maxStrike: maxS };
   }, [strategyPositions, underlyingPrice]);
-  
-  const range = maxStrike - minStrike;
+
+  const range = (maxStrike - minStrike) || Math.max(1, maxStrike * 0.1);
   const startPrice = Math.max(0, minStrike - range * 0.4);
   const endPrice = maxStrike + range * 0.4;
   
@@ -71,18 +80,20 @@ export default function PayoffChart({ strategyPositions, underlyingPrice, lotSiz
 
   const minPnl = Math.min(...data.map(d => d.pnl));
   const maxPnl = Math.max(...data.map(d => d.pnl));
-  const pnlRange = (maxPnl - minPnl) || 1;
-  
+  // A flat payoff (every point equal) gives a zero range -> division by zero
+  // in getY, which renders NaN path coordinates and a blank chart.
+  const pnlRange = (maxPnl - minPnl) || Math.max(1, Math.abs(maxPnl) * 0.2 || 1);
+
   // Add some padding to Y axis so lines don't hit the absolute edges
   const yPadding = pnlRange * 0.1;
   const chartMinPnl = minPnl - yPadding;
   const chartMaxPnl = maxPnl + yPadding;
-  const chartPnlRange = chartMaxPnl - chartMinPnl;
+  const chartPnlRange = (chartMaxPnl - chartMinPnl) || 1;
 
   // Viewport dimensions (SVG viewbox)
   const width = 800;
   const height = 400;
-  const padding = { top: 20, right: 40, bottom: 40, left: 60 };
+  const padding = { top: 28, right: 48, bottom: 40, left: 68 };
   
   const getX = (price) => padding.left + ((price - startPrice) / (endPrice - startPrice)) * (width - padding.left - padding.right);
   const getY = (pnl) => height - padding.bottom - ((pnl - chartMinPnl) / chartPnlRange) * (height - padding.top - padding.bottom);
@@ -126,8 +137,11 @@ export default function PayoffChart({ strategyPositions, underlyingPrice, lotSiz
       <svg 
         width="100%" 
         height="100%" 
-        viewBox={`0 0 ${width} ${height}`} 
-        preserveAspectRatio="none"
+        viewBox={`0 0 ${width} ${height}`}
+        /* "none" stretched the 800x400 viewBox to fill a ~250x150 panel,
+           distorting the payoff line and squashing every label. Preserve the
+           aspect ratio and let the SVG letterbox instead. */
+        preserveAspectRatio="xMidYMid meet"
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoverPrice(null)}
         style={{ display: 'block', cursor: 'crosshair' }}
@@ -147,8 +161,8 @@ export default function PayoffChart({ strategyPositions, underlyingPrice, lotSiz
               strokeWidth="1" 
               strokeDasharray="4 4" 
             />
-            <text x={getX(underlyingPrice)} y={padding.top - 5} fill="var(--accent-yellow)" fontSize="12" textAnchor="middle" fontFamily="var(--font-mono)">
-              Spot {underlyingPrice}
+            <text x={getX(underlyingPrice)} y={padding.top - 8} fill="var(--accent-yellow)" fontSize="13" textAnchor="middle" fontFamily="var(--font-mono)">
+              Spot {Number(underlyingPrice).toFixed(2)}
             </text>
           </g>
         )}

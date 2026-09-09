@@ -53,7 +53,7 @@ export default function MonteCarloPanel({ legs, spotPrice, iv = 15.0, dte = 7, l
         },
         timeScale: { visible: false },
         rightPriceScale: { borderVisible: false },
-        width: chartContainerRef.current.clientWidth,
+        width: chartContainerRef.current.clientWidth || 300,
         height: 120,
       });
 

@@ -94,13 +94,18 @@ class DataLoader:
 
     def _trading_dates(self, underlying: str) -> List[date]:
         """
-        Unique trading dates for an underlying, read cheaply.
+        Unique trading dates for an underlying.
 
-        Reads ONLY the date column from each Parquet file instead of every
-        column of every row. The callers here just need dates, but they used to
-        go through load_data() and pull ~8.4M fully-populated NIFTY rows into
-        memory, which is what made the first page load hang for ~15s.
+        Deduplicates in Arrow rather than pandas. The `date` column is a string
+        with only ~250 distinct values per year, so pyarrow.compute.unique reads
+        the (dictionary-compressed) column and returns the small distinct set —
+        instead of materializing 124M timestamps and calling .dt.date on each,
+        which took ~28s for NIFTY. Falls back to the `timestamp` column, cast to
+        a date before uniquing, only when no `date` column exists.
         """
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
         cache_key = f"__dates__{underlying}"
         if cache_key in self._cache:
             return self._cache[cache_key]
@@ -108,41 +113,122 @@ class DataLoader:
         found: set = set()
         for pq_file in self._parquet_files(underlying):
             try:
-                available = set(pq.read_schema(pq_file).names)
+                names = pq.read_schema(pq_file).names
             except Exception as e:
                 log.warning(f"Failed to read schema for {pq_file}: {e}")
                 continue
 
-            # `timestamp` is canonical; minimal fixtures only carry `date`.
-            column = "timestamp" if "timestamp" in available else (
-                "date" if "date" in available else None)
+            column = "date" if "date" in names else (
+                "timestamp" if "timestamp" in names else None)
             if column is None:
                 continue
 
             try:
-                series = pd.read_parquet(pq_file, columns=[column])[column]
+                arr = pq.read_table(pq_file, columns=[column]).column(column)
+                if pa.types.is_timestamp(arr.type):
+                    arr = pc.cast(arr, pa.date32())  # collapse to day before uniquing
+                for v in pc.unique(arr).to_pylist():
+                    d = self._stat_to_date(v)
+                    if d:
+                        found.add(d)
             except Exception as e:
                 log.warning(f"Failed to read {column} from {pq_file}: {e}")
                 continue
-
-            if pd.api.types.is_datetime64_any_dtype(series):
-                parsed = series
-            else:
-                cleaned = series.astype(str).str.replace(
-                    r'(Z|[+-]\d{2}:\d{2})$', '', regex=True)
-                parsed = pd.to_datetime(cleaned, format='ISO8601', errors='coerce')
-            found.update(parsed.dropna().dt.date.unique())
 
         result = sorted(found)
         self._cache[cache_key] = result
         return result
 
+    @staticmethod
+    def _stat_to_date(value) -> Optional[date]:
+        """Coerce a Parquet column-statistic min/max value to a date."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            return pd.to_datetime(str(value)[:10], errors="coerce").date()
+        except (ValueError, TypeError):
+            return None
+
     def available_date_range(self, underlying: str) -> Tuple[Optional[date], Optional[date]]:
-        """Get the min/max dates available for an underlying across all tracks."""
-        dates = self._trading_dates(underlying)
-        if not dates:
-            return None, None
-        return dates[0], dates[-1]
+        """
+        Min/max available dates for an underlying, read from Parquet row-group
+        statistics rather than the data itself.
+
+        Reading the date column across ~124M rows of merged intraday data took
+        tens of seconds and made the first load of the data-driven tabs hang.
+        Column min/max stats live in the file footer, so this is a metadata-only
+        scan (~milliseconds) that returns the identical range.
+        """
+        cache_key = f"__range__{underlying}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        lo = hi = None
+        for pq_file in self._parquet_files(underlying):
+            try:
+                md = pq.read_metadata(pq_file)
+                names = md.schema.to_arrow_schema().names
+                col = "date" if "date" in names else (
+                    "timestamp" if "timestamp" in names else None)
+                if col is None:
+                    continue
+                idx = names.index(col)
+                for rg in range(md.num_row_groups):
+                    stats = md.row_group(rg).column(idx).statistics
+                    if not stats or not stats.has_min_max:
+                        raise ValueError("no stats")  # fall back to a data read
+                    dmin = self._stat_to_date(stats.min)
+                    dmax = self._stat_to_date(stats.max)
+                    if dmin and (lo is None or dmin < lo):
+                        lo = dmin
+                    if dmax and (hi is None or dmax > hi):
+                        hi = dmax
+            except Exception:
+                # Any file without usable stats: fall back to the full scan,
+                # which is correct (just slower) for that one underlying.
+                dates = self._trading_dates(underlying)
+                result = (dates[0], dates[-1]) if dates else (None, None)
+                self._cache[cache_key] = result
+                return result
+
+        result = (lo, hi)
+        self._cache[cache_key] = result
+        return result
+
+    @staticmethod
+    def _date_pushdown(pq_file: Path, start_date: Optional[date],
+                       end_date: Optional[date]):
+        """
+        Build a pyarrow predicate on the `date` column so only the relevant
+        row groups are read from disk. A one-month backtest previously read the
+        whole year file (14M–69M rows) and filtered in pandas; pushdown lets the
+        Parquet reader skip row groups outside the range via their min/max stats.
+
+        Only applied to a string `date` column (the large intraday files), where
+        ISO 'YYYY-MM-DD' strings sort chronologically. Returns None otherwise —
+        daily files are tiny, so reading them whole costs nothing. The pandas
+        `_date` filter downstream still enforces exact bounds, so pushdown only
+        ever needs to be a superset; results are identical either way.
+        """
+        if start_date is None and end_date is None:
+            return None
+        try:
+            import pyarrow as pa
+            field = pq.read_schema(pq_file).field("date")
+        except (KeyError, Exception):
+            return None
+        if not (pa.types.is_string(field.type) or pa.types.is_large_string(field.type)):
+            return None
+        conds = []
+        if start_date:
+            conds.append(("date", ">=", start_date.isoformat()))
+        if end_date:
+            conds.append(("date", "<=", end_date.isoformat()))
+        return conds or None
 
     def load_data(
         self,
@@ -185,7 +271,9 @@ class DataLoader:
                 if not self._file_in_range(pq_file, start_date, end_date):
                     continue
                 try:
-                    df = pd.read_parquet(pq_file)
+                    df = pd.read_parquet(
+                        pq_file, filters=self._date_pushdown(pq_file, start_date, end_date)
+                    )
                     if not df.empty:
                         frames.append(df)
                 except Exception as e:
@@ -459,10 +547,13 @@ class DataLoader:
         trading date.  This prevents the user from selecting arbitrary expiry
         dates.
         """
-        data = self.load_data(underlying)
+        target = date.fromisoformat(trading_date)
+        # Scope the load to the single day. Loading the whole underlying and
+        # filtering in memory pulled ~124M rows for NIFTY once the intraday
+        # backfill landed, exhausting RAM.
+        data = self.load_data(underlying, target, target)
         if data.empty:
             return []
-        target = date.fromisoformat(trading_date)
         mask = data["timestamp"].dt.date == target
         day_data = data[mask]
         if day_data.empty:
@@ -476,10 +567,10 @@ class DataLoader:
         Return all unique timestamps (as ISO strings) for a given trading date.
         Useful for the time-slider in the UI.
         """
-        data = self.load_data(underlying)
+        target = date.fromisoformat(trading_date)
+        data = self.load_data(underlying, target, target)  # one day, not all history
         if data.empty:
             return []
-        target = date.fromisoformat(trading_date)
         mask = data["timestamp"].dt.date == target
         day_data = data[mask]
         if day_data.empty:

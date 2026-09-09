@@ -77,6 +77,52 @@ def test_out_of_range_query_returns_empty(loader):
     assert loader.load_data("SYNTH", date(2019, 1, 1), date(2019, 12, 31)).empty
 
 
+# ── date predicate pushdown (real intraday data uses a STRING date column) ──
+
+def _write_string_date_file(base):
+    """A parquet whose `date` column is an ISO string, like the intraday data,
+    so the pushdown path is actually exercised (the SYNTH fixture uses datetime)."""
+    d = base / "upstox_intraday" / "STRDATE"
+    d.mkdir(parents=True)
+    rows = []
+    for day in ["2024-10-01", "2024-10-02", "2024-10-03", "2024-10-04"]:
+        for strike in (100.0, 200.0):
+            rows.append({
+                "date": day, "timestamp": f"{day}T09:20:00", "underlying": "STRDATE",
+                "expiry": "2024-10-10", "strike": strike, "option_type": "CE",
+                "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                "volume": 1.0, "oi": 1.0, "settle_price": 1.0,
+                "source": "test", "granularity": "1min",
+            })
+    pd.DataFrame(rows).to_parquet(d / "STRDATE_2024.parquet", index=False)
+
+
+def test_pushdown_returns_exact_rows_on_string_date(tmp_path):
+    _write_string_date_file(tmp_path)
+    loader = DataLoader(str(tmp_path))
+
+    import pyarrow.parquet as pq
+    f = tmp_path / "upstox_intraday" / "STRDATE" / "STRDATE_2024.parquet"
+    assert str(pq.read_schema(f).field("date").type) in ("string", "large_string")
+
+    mid = loader.load_data("STRDATE", date(2024, 10, 2), date(2024, 10, 3))
+    assert set(mid["timestamp"].dt.date.astype(str).unique()) == {"2024-10-02", "2024-10-03"}
+    assert len(mid) == 4  # 2 days x 2 strikes
+
+    full = loader.load_data("STRDATE")
+    assert len(full) == 8
+
+
+def test_date_pushdown_only_targets_string_columns(tmp_path):
+    """Datetime `date` columns must NOT get a string filter (would mismatch)."""
+    _write_string_date_file(tmp_path)
+    f = tmp_path / "upstox_intraday" / "STRDATE" / "STRDATE_2024.parquet"
+    conds = DataLoader._date_pushdown(f, date(2024, 10, 2), date(2024, 10, 3))
+    assert conds == [("date", ">=", "2024-10-02"), ("date", "<=", "2024-10-03")]
+    # no date range -> no filter
+    assert DataLoader._date_pushdown(f, None, None) is None
+
+
 def test_estimate_spot_price_recovers_spot_via_parity(loader):
     data = loader.load_data("SYNTH")
     ts = sorted(data["timestamp"].unique())[0]

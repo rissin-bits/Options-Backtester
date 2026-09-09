@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import PayoffChart from '../components/PayoffChart';
 import GreeksPanel from '../components/GreeksPanel';
 import StressTestPanel from '../components/StressTestPanel';
@@ -15,11 +15,57 @@ const STRATEGY_PRESETS = [
   { name: 'Bear Put Spread', legs: [{ side: 'BUY', type: 'PE', strike: 0 }, { side: 'SELL', type: 'PE', strike: -2 }] },
 ];
 
-export default function StrategyBuilder({ legs, setLegs }) {
-  const [spotPrice, setSpotPrice] = useState(22000);
-  const [lotSize, setLotSize] = useState(50);
-  const [dte, setDte] = useState(7);
+// NSE contract lot sizes, used when the chain hasn't reported one yet.
+const LOT_SIZES = { NIFTY: 25, BANKNIFTY: 15, FINNIFTY: 25, MIDCPNIFTY: 50, SENSEX: 10 };
+
+export default function StrategyBuilder({ legs, setLegs, chain }) {
+  // Everything below is sourced from the live options chain, with a manual
+  // override kept for each so the panel still works before a chain has loaded.
+  const [spotOverride, setSpotOverride] = useState(null);
+  const [lotOverride, setLotOverride] = useState(null);
+  const [dteOverride, setDteOverride] = useState(null);
   const [ivOverride, setIvOverride] = useState(null);
+
+  const spotPrice = spotOverride ?? (chain?.spotPrice || 0);
+  const lotSize = lotOverride ?? (LOT_SIZES[chain?.underlying] ?? 50);
+  const dte = dteOverride ?? (chain?.dte ?? 7);
+
+  const strikes = chain?.strikes ?? [];
+  const strikeStep = chain?.step ?? 50;
+
+  // Real premium/greeks for a given (strike, type) straight off the chain.
+  const quoteFor = (strike, type) => chain?.quotes?.[`${strike}_${type}`] || null;
+
+  // Snap an arbitrary price to the nearest strike that actually exists.
+  const nearestStrike = (price) => {
+    if (!strikes.length) return Math.round(price / strikeStep) * strikeStep;
+    return strikes.reduce((best, s) =>
+      Math.abs(s - price) < Math.abs(best - price) ? s : best, strikes[0]);
+  };
+
+  // Move `offset` strikes away from ATM, staying on the real strike ladder.
+  const strikeAtOffset = (offset) => {
+    const atm = nearestStrike(spotPrice);
+    if (!strikes.length) return atm + offset * strikeStep;
+    const i = strikes.indexOf(atm);
+    return strikes[Math.max(0, Math.min(strikes.length - 1, i + offset))];
+  };
+
+  // Build a leg with live premium and greeks; fall back only if unquoted.
+  const makeLeg = (side, type, strike) => {
+    const q = quoteFor(strike, type);
+    return {
+      id: Math.random().toString(36).substr(2, 9),
+      side, type, strike, qty: 1,
+      premium: q?.close ?? 0,
+      iv: q?.iv ?? 15.0,
+      delta: q?.delta ?? (type === 'CE' ? 0.5 : -0.5),
+      gamma: q?.gamma ?? 0.01,
+      theta: q?.theta ?? -5,
+      vega: q?.vega ?? 12,
+      unquoted: !q,
+    };
+  };
 
   // Legs added from the options chain carry a real IV (in %). Average them so
   // the stress-test / Monte Carlo panels model the position actually on screen
@@ -35,27 +81,32 @@ export default function StrategyBuilder({ legs, setLegs }) {
   const iv = ivOverride ?? impliedIv;
 
   const loadPreset = (preset) => {
-    const step = 50; 
-    const atmStrike = Math.round(spotPrice / step) * step;
-    
-    const newLegs = preset.legs.map((l, i) => ({
-      id: Math.random().toString(36).substr(2, 9),
-      side: l.side,
-      type: l.type,
-      strike: atmStrike + (l.strike * step),
-      qty: 1,
-      premium: 100, // Mock premium
-      iv: 15.0,
-      delta: l.type === 'CE' ? 0.5 : -0.5,
-      gamma: 0.01,
-      theta: -5,
-      vega: 12
-    }));
-    setLegs(newLegs);
+    // preset offsets are in strikes-from-ATM, resolved against the real ladder.
+    setLegs(preset.legs.map(l => makeLeg(l.side, l.type, strikeAtOffset(l.strike))));
   };
 
   const updateLeg = (id, field, value) => {
-    setLegs(legs.map(l => l.id === id ? { ...l, [field]: value } : l));
+    setLegs(legs.map(l => {
+      if (l.id !== id) return l;
+      const next = { ...l, [field]: value };
+      // Changing the contract must re-quote it, otherwise the premium and
+      // greeks silently describe the option you were looking at before.
+      if (field === 'strike' || field === 'type') {
+        const q = quoteFor(next.strike, next.type);
+        if (q) {
+          next.premium = q.close ?? next.premium;
+          next.iv = q.iv ?? next.iv;
+          next.delta = q.delta ?? next.delta;
+          next.gamma = q.gamma ?? next.gamma;
+          next.theta = q.theta ?? next.theta;
+          next.vega = q.vega ?? next.vega;
+          next.unquoted = false;
+        } else {
+          next.unquoted = true;
+        }
+      }
+      return next;
+    }));
   };
 
   const removeLeg = (id) => {
@@ -63,19 +114,22 @@ export default function StrategyBuilder({ legs, setLegs }) {
   };
 
   const addCustomLeg = () => {
-    const step = 50; 
-    const atmStrike = Math.round(spotPrice / step) * step;
-    setLegs([...legs, {
-      id: Math.random().toString(36).substr(2, 9),
-      side: 'BUY',
-      type: 'CE',
-      strike: atmStrike,
-      qty: 1,
-      premium: 100,
-      iv: 15.0,
-      delta: 0.5, gamma: 0.01, theta: -5, vega: 12
-    }]);
+    setLegs([...legs, makeLeg('BUY', 'CE', nearestStrike(spotPrice))]);
   };
+
+  // Re-price existing legs when the underlying, expiry or timestamp changes, so
+  // the builder never shows quotes from a chain that is no longer on screen.
+  const chainKey = `${chain?.underlying}_${chain?.expiry}_${chain?.spotPrice}`;
+  useEffect(() => {
+    if (!chain?.quotes || !legs.length) return;
+    setLegs(prev => prev.map(l => {
+      const q = chain.quotes[`${l.strike}_${l.type}`];
+      if (!q) return { ...l, unquoted: true };
+      return { ...l, premium: q.close ?? l.premium, iv: q.iv ?? l.iv,
+               delta: q.delta ?? l.delta, gamma: q.gamma ?? l.gamma,
+               theta: q.theta ?? l.theta, vega: q.vega ?? l.vega, unquoted: false };
+    }));
+  }, [chainKey]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -141,10 +195,39 @@ export default function StrategyBuilder({ legs, setLegs }) {
                       </select>
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input type="number" style={{ backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '4px', borderRadius: '4px', width: '80px', textAlign: 'center', outline: 'none' }} value={leg.strike} onChange={e => updateLeg(leg.id, 'strike', parseFloat(e.target.value) || 0)} step="50" />
+                      {/* Constrained to strikes that actually exist in the
+                          chain, so a leg can never reference a contract with
+                          no price. Falls back to a stepped number input only
+                          when no chain is loaded. */}
+                      {strikes.length ? (
+                        <select
+                          style={{ backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '4px', borderRadius: '4px', width: '92px', textAlign: 'center', outline: 'none' }}
+                          value={leg.strike}
+                          onChange={e => updateLeg(leg.id, 'strike', parseFloat(e.target.value))}
+                        >
+                          {!strikes.includes(leg.strike) && (
+                            <option value={leg.strike}>{leg.strike} (off-chain)</option>
+                          )}
+                          {strikes.map(s => (
+                            <option key={s} value={s}>
+                              {s}{s === nearestStrike(spotPrice) ? ' · ATM' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input type="number" style={{ backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '4px', borderRadius: '4px', width: '92px', textAlign: 'center', outline: 'none' }} value={leg.strike} onChange={e => updateLeg(leg.id, 'strike', parseFloat(e.target.value) || 0)} step={strikeStep} />
+                      )}
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input type="number" style={{ backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '4px', borderRadius: '4px', width: '80px', textAlign: 'center', outline: 'none' }} value={leg.premium} onChange={e => updateLeg(leg.id, 'premium', parseFloat(e.target.value) || 0)} />
+                      <input
+                        type="number"
+                        title={leg.unquoted
+                          ? 'No quote for this contract in the loaded chain — value entered manually'
+                          : 'Live premium from the options chain'}
+                        style={{ backgroundColor: 'var(--bg-tertiary)', border: `1px solid ${leg.unquoted ? 'var(--accent-yellow)' : 'var(--border-color)'}`, color: leg.unquoted ? 'var(--accent-yellow)' : 'var(--text-primary)', padding: '4px', borderRadius: '4px', width: '80px', textAlign: 'center', outline: 'none' }}
+                        value={leg.premium}
+                        onChange={e => updateLeg(leg.id, 'premium', parseFloat(e.target.value) || 0)}
+                      />
                     </td>
                     <td style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>{leg.iv.toFixed(1)}</td>
                   </tr>
@@ -168,10 +251,28 @@ export default function StrategyBuilder({ legs, setLegs }) {
             
             {/* Quick settings for chart */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+              {chain?.underlying && (
+                <span className="badge badge-blue" style={{ fontSize: '10px', padding: '2px 6px' }}>
+                  {chain.underlying}
+                </span>
+              )}
               <span style={{ color: 'var(--text-secondary)' }}>Spot:</span>
-              <input type="number" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--accent-yellow)', padding: '2px 4px', borderRadius: '4px', width: '60px', textAlign: 'center', outline: 'none' }} value={spotPrice} onChange={e => setSpotPrice(parseFloat(e.target.value) || 0)} step="50" />
+              <input
+                type="number"
+                title={spotOverride === null ? 'Live spot from the options chain' : 'Manual override'}
+                style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--accent-yellow)', padding: '2px 4px', borderRadius: '4px', width: '76px', textAlign: 'center', outline: 'none' }}
+                value={Number.isFinite(spotPrice) ? Number(spotPrice.toFixed(2)) : 0}
+                onChange={e => setSpotOverride(parseFloat(e.target.value) || 0)}
+                step={strikeStep}
+              />
+              {spotOverride !== null && chain?.spotPrice ? (
+                <button className="btn btn-sm btn-ghost" style={{ fontSize: '10px', padding: '2px 6px' }}
+                        onClick={() => setSpotOverride(null)} title="Use live chain spot">
+                  live
+                </button>
+              ) : null}
               <span style={{ color: 'var(--text-secondary)', marginLeft: '4px' }}>Lot Size:</span>
-              <input type="number" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '2px 4px', borderRadius: '4px', width: '40px', textAlign: 'center', outline: 'none' }} value={lotSize} onChange={e => setLotSize(parseInt(e.target.value) || 1)} min="1" />
+              <input type="number" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '2px 4px', borderRadius: '4px', width: '48px', textAlign: 'center', outline: 'none' }} value={lotSize} onChange={e => setLotOverride(parseInt(e.target.value) || 1)} min="1" />
             </div>
           </div>
           <div style={{ flex: 1, padding: '16px' }}>
@@ -210,7 +311,7 @@ export default function StrategyBuilder({ legs, setLegs }) {
                     type="number" step="1" min="0"
                     style={{ backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '4px', borderRadius: '4px', width: '100%', outline: 'none' }}
                     value={dte}
-                    onChange={e => setDte(Math.max(0, parseInt(e.target.value) || 0))}
+                    onChange={e => setDteOverride(Math.max(0, parseInt(e.target.value) || 0))}
                   />
                 </div>
               </div>

@@ -545,7 +545,11 @@ class BacktestEngine:
 
         sel = order.strike_selection.value
         offset = 0
-        if "+" in sel:
+        if sel in ("ATM+N", "ATM-N"):
+            # Arbitrary width carried on the order (see Order.strike_offset).
+            n = abs(int(order.strike_offset or 0))
+            offset = n if sel == "ATM+N" else -n
+        elif "+" in sel:
             offset = int(sel.split("+")[1])
         elif "-" in sel:
             offset = -int(sel.split("-")[1])

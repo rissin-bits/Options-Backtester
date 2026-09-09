@@ -93,6 +93,33 @@ def test_example_strategies_exposed(client):
     assert rows and {"id", "name", "description"} <= set(rows[0])
 
 
+def test_strategy_templates_endpoint(client):
+    rows = client.get("/api/strategies/templates").json()
+    assert len(rows) == 9
+    for t in rows:
+        assert {"id", "name", "description", "params", "preview_legs"} <= set(t)
+        assert t["params"]  # every strategy is adjustable
+
+
+def test_backtest_with_adjusted_params_runs(client):
+    """strategy_id + params must build the adjusted strategy and run."""
+    req = _backtest_request("SYNTH", "1min")
+    del req["strategy"]
+    req["strategy_id"] = "short_straddle_920"
+    base = {"entry_time": "09:20", "square_off_time": "15:15", "stop_loss_pct": 0}
+
+    req["params"] = {**base, "lots": 1}
+    one = client.post("/api/backtest", json=req).json()
+    req["params"] = {**base, "lots": 2}
+    two = client.post("/api/backtest", json=req).json()
+
+    assert one["total_trades"] > 0 and two["total_trades"] > 0
+    # Trade quantity is lots * lot size, so doubling lots doubles the quantity.
+    q1 = one["trades"][0]["quantity"]
+    q2 = two["trades"][0]["quantity"]
+    assert q2 == 2 * q1
+
+
 def test_strategy_save_get_delete_roundtrip(client):
     config = {
         "name": "s", "description": "d",

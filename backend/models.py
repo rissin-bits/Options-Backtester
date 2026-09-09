@@ -102,6 +102,10 @@ class BacktestRequest(BaseModel):
     """Request to run a backtest."""
     strategy: Optional[StrategyConfigModel] = None
     strategy_id: Optional[str] = None
+    # Adjustments for a ready-made strategy identified by strategy_id, keyed by
+    # the param `key`s from GET /api/strategies/templates. Ignored for inline
+    # `strategy` configs.
+    params: Optional[Dict[str, Any]] = None
     underlying: str = "NIFTY"
     start_date: str  # "2024-01-01"
     end_date: str     # "2024-03-31"

@@ -56,7 +56,7 @@ export default function BacktestModal({ isOpen, onClose, legs, underlying, onRes
           borderVisible: false,
           timeVisible: true,
         },
-        width: chartContainerRef.current.clientWidth,
+        width: chartContainerRef.current.clientWidth || 600,
         height: 250,
       });
 
@@ -151,7 +151,7 @@ export default function BacktestModal({ isOpen, onClose, legs, underlying, onRes
     };
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.hostname}:8000/ws/backtest`;
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/backtest`;
     
     const ws = new WebSocket(wsUrl);
 

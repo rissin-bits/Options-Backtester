@@ -43,6 +43,7 @@ from backend.strategy import (
     StrikeSelection, OrderType,
 )
 from backend.example_strategies import EXAMPLE_STRATEGIES
+from backend.strategy_templates import TEMPLATES, list_templates, build_strategy
 from backend.monte_carlo import run_monte_carlo
 from backend.stress_test import run_stress_tests
 
@@ -149,11 +150,13 @@ async def get_underlyings():
 @app.post("/api/data/options-chain")
 async def get_options_chain(request: OptionsChainRequest):
     """Get historical options chain for a specific date/time, enriched with Greeks and IV."""
-    data = loader.load_data(request.underlying)
+    target_date = date.fromisoformat(request.date)
+
+    # Load only the requested day. Loading the whole underlying pulled ~124M
+    # rows for NIFTY after the intraday backfill and exhausted memory.
+    data = loader.load_data(request.underlying, target_date, target_date)
     if data.empty:
         raise HTTPException(404, f"No data for {request.underlying}")
-
-    target_date = date.fromisoformat(request.date)
 
     if request.time:
         target_ts = datetime.fromisoformat(f"{request.date}T{request.time}")
@@ -269,6 +272,34 @@ async def list_strategies():
     return list(saved_strategies.values())
 
 
+@app.get("/api/strategies/templates")
+async def get_strategy_templates():
+    """
+    List every ready-made strategy together with its adjustable parameter
+    schema and a preview of the legs it will trade at the default settings.
+    The Backtest tab renders these as editable forms.
+    """
+    return list_templates()
+
+
+@app.post("/api/strategies/templates/{template_id}/preview")
+async def preview_strategy_template(template_id: str, params: Optional[Dict[str, Any]] = None):
+    """
+    Re-derive a template's legs, exit rules and resolved params for a given set
+    of adjustments, so the Backtest tab can show a live preview as the user edits.
+    """
+    if template_id not in TEMPLATES:
+        raise HTTPException(404, f"Unknown strategy template: {template_id}")
+    template = TEMPLATES[template_id]
+    resolved = template.resolve(params or {})
+    return {
+        "id": template_id,
+        "resolved_params": resolved,
+        **{k: v for k, v in template.to_dict(params or {}).items()
+           if k in ("preview_legs",)},
+    }
+
+
 @app.get("/api/strategies/examples")
 async def get_example_strategies():
     """List built-in example strategies."""
@@ -380,6 +411,10 @@ def _resolve_strategy(request: BacktestRequest):
     so hand back a deep copy rather than the shared instance.
     """
     if request.strategy_id:
+        # Ready-made strategies are built from templates so the user's
+        # adjustments (request.params) actually take effect.
+        if request.strategy_id in TEMPLATES:
+            return build_strategy(request.strategy_id, request.params)
         if request.strategy_id in EXAMPLE_STRATEGIES:
             return copy.deepcopy(EXAMPLE_STRATEGIES[request.strategy_id])
         if request.strategy_id in saved_strategies:

@@ -36,8 +36,12 @@ export default function Results({ resultsData }) {
         vertLine: { color: 'rgba(201, 168, 76, 0.4)', labelBackgroundColor: '#21262d' },
         horzLine: { color: 'rgba(201, 168, 76, 0.4)', labelBackgroundColor: '#21262d' },
       },
-      width: equityChartRef.current.clientWidth,
-      height: equityChartRef.current.clientHeight,
+      // Size explicitly. autoSize was tried but it *ignores* width/height and
+      // relies solely on a ResizeObserver — which never fires in some embedded
+      // browsers, leaving the canvas stuck at the default 300x150 and blank.
+      // Instead we size now and re-measure after layout (below).
+      width: equityChartRef.current.clientWidth || 600,
+      height: equityChartRef.current.clientHeight || 320,
     });
 
     const isProfit = results.total_pnl >= 0;
@@ -65,17 +69,24 @@ export default function Results({ resultsData }) {
 
     equityChartInstance.current = chart;
 
-    const handleResize = () => {
-      if (equityChartRef.current && equityChartInstance.current) {
-        equityChartInstance.current.applyOptions({
-          width: equityChartRef.current.clientWidth,
-          height: equityChartRef.current.clientHeight,
-        });
+    // Re-measure once after layout settles (the container may have had 0 width
+    // when createChart ran) and on every subsequent container resize. rAF
+    // handles the initial correction even where ResizeObserver never fires.
+    const el = equityChartRef.current;
+    const resize = () => {
+      if (el && equityChartInstance.current && el.clientWidth) {
+        equityChartInstance.current.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+        equityChartInstance.current.timeScale().fitContent();
       }
     };
-    window.addEventListener('resize', handleResize);
+    const raf = requestAnimationFrame(resize);
+    const ro = new ResizeObserver(resize);
+    ro.observe(el);
+    window.addEventListener('resize', resize);
     return () => {
-      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener('resize', resize);
       equityChartInstance.current?.remove();
     };
   }, [results]);
@@ -97,8 +108,8 @@ export default function Results({ resultsData }) {
       },
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false },
-      width: dailyChartRef.current.clientWidth,
-      height: dailyChartRef.current.clientHeight,
+      width: dailyChartRef.current.clientWidth || 600,
+      height: dailyChartRef.current.clientHeight || 200,
     });
 
     const histogramSeries = chart.addSeries(HistogramSeries, {
@@ -121,17 +132,21 @@ export default function Results({ resultsData }) {
 
     dailyChartInstance.current = chart;
 
-    const handleResize = () => {
-      if (dailyChartRef.current && dailyChartInstance.current) {
-        dailyChartInstance.current.applyOptions({
-          width: dailyChartRef.current.clientWidth,
-          height: dailyChartRef.current.clientHeight,
-        });
+    const el = dailyChartRef.current;
+    const resize = () => {
+      if (el && dailyChartInstance.current && el.clientWidth) {
+        dailyChartInstance.current.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+        dailyChartInstance.current.timeScale().fitContent();
       }
     };
-    window.addEventListener('resize', handleResize);
+    const raf = requestAnimationFrame(resize);
+    const ro = new ResizeObserver(resize);
+    ro.observe(el);
+    window.addEventListener('resize', resize);
     return () => {
-      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener('resize', resize);
       dailyChartInstance.current?.remove();
     };
   }, [results]);

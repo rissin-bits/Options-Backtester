@@ -10,7 +10,7 @@ import BacktestRunner from './pages/BacktestRunner';
 import { Settings, Play, Code2, BarChart3, LayoutDashboard, Terminal, FlaskConical } from 'lucide-react';
 import './index.css';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = window.location.origin;
 
 function StatusIndicator() {
   const [status, setStatus] = useState('Checking...');
@@ -49,7 +49,7 @@ const SPLIT_MIN = 25;
 const SPLIT_MAX = 75;
 const SPLIT_DEFAULT = 55;
 
-function Workspace({ legs, setLegs, handleAddLeg }) {
+function Workspace({ legs, setLegs, handleAddLeg, chainContext, setChainContext }) {
   const containerRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   const [splitPct, setSplitPct] = useState(() => {
@@ -99,7 +99,7 @@ function Workspace({ legs, setLegs, handleAddLeg }) {
     >
       {/* Left Panel: Options Chain */}
       <div className="workspace-left">
-        <OptionsChain onAddLeg={handleAddLeg} />
+        <OptionsChain onAddLeg={handleAddLeg} onChainUpdate={setChainContext} />
       </div>
 
       <div
@@ -114,7 +114,7 @@ function Workspace({ legs, setLegs, handleAddLeg }) {
 
       {/* Right Panel: Builder & Analytics */}
       <div className="workspace-right">
-        <StrategyBuilder legs={legs} setLegs={setLegs} />
+        <StrategyBuilder legs={legs} setLegs={setLegs} chain={chainContext} />
       </div>
     </div>
   );
@@ -124,6 +124,9 @@ function App() {
   const [legs, setLegs] = useState([]);
   const [isBacktestModalOpen, setIsBacktestModalOpen] = useState(false);
   const [latestResult, setLatestResult] = useState(null);
+  // Live options-chain context (spot, strikes, strike step, quotes), published
+  // by OptionsChain and consumed by StrategyBuilder / BacktestModal.
+  const [chainContext, setChainContext] = useState(null);
   
   const navigate = useNavigate();
   const location = useLocation();
@@ -197,7 +200,7 @@ function App() {
 
       {/* Main Content Area */}
       <Routes>
-        <Route path="/" element={<Workspace legs={legs} setLegs={setLegs} handleAddLeg={handleAddLeg} />} />
+        <Route path="/" element={<Workspace legs={legs} setLegs={setLegs} handleAddLeg={handleAddLeg} chainContext={chainContext} setChainContext={setChainContext} />} />
         <Route path="/dashboard" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><Dashboard /></div>} />
         <Route path="/backtest" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><BacktestRunner onResult={handleResult} /></div>} />
         <Route path="/code" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><CodeEditor /></div>} />
@@ -208,7 +211,7 @@ function App() {
         isOpen={isBacktestModalOpen} 
         onClose={() => setIsBacktestModalOpen(false)} 
         legs={legs}
-        underlying="NIFTY"
+        underlying={chainContext?.underlying || "NIFTY"}
         onResult={handleResult}
       />
     </div>

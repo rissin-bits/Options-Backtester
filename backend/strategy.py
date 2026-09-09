@@ -81,6 +81,10 @@ class Order:
     limit_price: Optional[float] = None
     expiry_selection: str = "nearest"  # "nearest", "next", "monthly", or explicit
     tag: str = ""  # Custom label for this leg
+    # Number of strikes away from ATM for the ATM_PLUS_N / ATM_MINUS_N modes.
+    # Lets a strategy pick an arbitrary width (e.g. a 5-strike-wide strangle)
+    # instead of being limited to the ATM+1 / ATM+2 enum members.
+    strike_offset: Optional[int] = None
 
 
 @dataclass
