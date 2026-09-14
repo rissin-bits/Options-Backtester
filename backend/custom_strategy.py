@@ -50,6 +50,16 @@ def _hhmm(value, fallback: time) -> time:
         return fallback
 
 
+def _expires_by(expiry, trading_day) -> bool:
+    """True if `expiry` (a 'YYYY-MM-DD' string / date) is on or before trading_day."""
+    from datetime import date as _date
+    try:
+        exp = _date.fromisoformat(str(expiry)[:10])
+        return exp <= trading_day
+    except (ValueError, TypeError):
+        return True  # unparseable → treat as due, so it never hangs open
+
+
 class CustomLegStrategy(Strategy):
     """A batch of legs entered together, with optional re-entry."""
 
@@ -66,6 +76,7 @@ class CustomLegStrategy(Strategy):
         exit_condition: Optional[Condition] = None,
         overall_stop_loss: Optional[float] = None,   # ₹ loss on the combined batch
         overall_take_profit: Optional[float] = None,  # ₹ profit on the combined batch
+        positional: bool = False,   # hold across days (exit on expiry/stop/target)
     ):
         self.name = name
         self.description = description
@@ -80,6 +91,7 @@ class CustomLegStrategy(Strategy):
         self.exit_condition = exit_condition     # when true, square off the batch
         self.overall_sl = overall_stop_loss
         self.overall_tp = overall_take_profit
+        self.positional = bool(positional)
         self._entries_today = 0
 
     def required_indicators(self):
@@ -93,9 +105,12 @@ class CustomLegStrategy(Strategy):
     def on_candle(self, ctx: MarketContext) -> Union[List[Order], str, None]:
         t = ctx.time_of_day
 
-        # End of the trade window → flatten and stop for the day.
-        if t >= self.square_off:
-            return "SQUARE_OFF_ALL" if ctx.positions else None
+        # Square-off time. Intraday flattens every day; positional only flattens
+        # on the expiry day of a held leg (otherwise it holds across days).
+        if ctx.positions and t >= self.square_off:
+            if not self.positional or any(_expires_by(p.expiry, ctx.trading_day)
+                                          for p in ctx.positions):
+                return "SQUARE_OFF_ALL"
 
         # Overall (per-trade) target: close the whole batch when its combined
         # open P&L crosses the ₹ stop-loss or take-profit.
@@ -111,8 +126,8 @@ class CustomLegStrategy(Strategy):
             if self.exit_condition.evaluate(ctx):
                 return "SQUARE_OFF_ALL"
 
-        # Not yet in the entry window.
-        if t < self.entry_after:
+        # No new entries outside the window (before entry time or after square-off).
+        if t < self.entry_after or t >= self.square_off:
             return None
 
         # A batch is already live — leave it to the per-leg risk / square-off.
@@ -142,12 +157,13 @@ class MultiCaseStrategy(Strategy):
 
     def __init__(self, name="Multi-case Strategy", cases=None,
                  square_off_time="15:15", overall_stop_loss=None,
-                 overall_take_profit=None):
+                 overall_take_profit=None, positional=False):
         self.name = name
         self.cases = cases or []   # list of dicts (see api._build_custom_strategy)
         self.square_off = _hhmm(square_off_time, time(15, 15))
         self.overall_sl = overall_stop_loss
         self.overall_tp = overall_take_profit
+        self.positional = bool(positional)
         self._entries = [0] * len(self.cases)
 
     def on_day_start(self, ctx):
@@ -162,8 +178,12 @@ class MultiCaseStrategy(Strategy):
 
     def on_candle(self, ctx):
         t = ctx.time_of_day
-        if t >= self.square_off:
-            return "SQUARE_OFF_ALL" if ctx.positions else None
+
+        # Square-off: intraday flattens daily; positional only on an expiry day.
+        if ctx.positions and t >= self.square_off:
+            if not self.positional or any(_expires_by(p.expiry, ctx.trading_day)
+                                          for p in ctx.positions):
+                return "SQUARE_OFF_ALL"
 
         if ctx.positions and (self.overall_sl is not None or self.overall_tp is not None):
             combined = sum(p.unrealized_pnl for p in ctx.positions)
@@ -185,8 +205,8 @@ class MultiCaseStrategy(Strategy):
             if live:
                 continue  # case is running; leave per-leg risk to the engine
 
-            # Entry for this case.
-            if t < case["entry_after"]:
+            # Entry for this case (no new entries outside the window).
+            if t < case["entry_after"] or t >= self.square_off:
                 continue
             if self._entries[i] >= case["max_entries"]:
                 continue

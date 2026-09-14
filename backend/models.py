@@ -134,6 +134,9 @@ class CustomStrategyModel(BaseModel):
     # Parallel cases. When non-empty, these run side by side and the top-level
     # legs/conditions above are ignored (square_off + targets stay shared).
     cases: List[CaseModel] = []
+    # Positional = hold across days (exit on expiry / stop / target / condition);
+    # otherwise intraday (square off every day at square_off_time).
+    positional: bool = False
     # Optional Entry-When (all must hold, on top of entry_time) and Exit-When
     # (any triggers a square-off) conditions, e.g. indicator or spot thresholds.
     entry_conditions: List[ConditionModel] = []

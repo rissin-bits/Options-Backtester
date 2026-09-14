@@ -30,7 +30,7 @@ const sectionLabel = { fontSize: '11px', textTransform: 'uppercase', letterSpaci
 export default function StrategyLab({ onResult }) {
   const [cases, setCases] = useState([newCase('Case 1')]);
   const [activeIdx, setActiveIdx] = useState(0);
-  const [settings, setSettings] = useState({ name: 'My Strategy', square_off_time: '15:15' });
+  const [settings, setSettings] = useState({ name: 'My Strategy', square_off_time: '15:15', positional: false });
   const [targets, setTargets] = useState({ overall_sl: '', overall_tp: '', daily_sl: '', daily_tp: '' });
   const [config, setConfig] = useState({
     underlying: 'NIFTY', start_date: '2024-10-01', end_date: '2024-10-31',
@@ -95,6 +95,7 @@ export default function StrategyLab({ onResult }) {
     setRunning(true); setProgress(0); setStatusMsg('Connecting…'); setError(null); setWarnings([]);
     const custom_strategy = {
       name: settings.name, square_off_time: settings.square_off_time,
+      positional: settings.positional,
       cases: cases.map(caseToPayload),
       overall_stop_loss: num(targets.overall_sl), overall_take_profit: num(targets.overall_tp),
     };
@@ -225,6 +226,19 @@ export default function StrategyLab({ onResult }) {
             <Field label="Square-off" grow><input type="time" className="form-control" value={settings.square_off_time} onChange={e => setSettings(s => ({ ...s, square_off_time: e.target.value }))} /></Field>
             <Field label="Lot size" grow><input type="number" className="form-control" value={config.lot_size} onChange={e => setConfig(c => ({ ...c, lot_size: parseInt(e.target.value) || 1 }))} /></Field>
           </div>
+          <Field label="Trade type">
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {[['intraday', 'Intraday', false], ['positional', 'Positional', true]].map(([key, lbl, val]) => (
+                <button key={key} onClick={() => setSettings(s => ({ ...s, positional: val }))}
+                  style={{ flex: 1, padding: '6px', fontSize: '12px', cursor: 'pointer', borderRadius: '4px',
+                    border: '1px solid ' + (settings.positional === val ? 'var(--accent-blue)' : 'var(--border-color)'),
+                    background: settings.positional === val ? 'rgba(59,130,246,0.15)' : 'var(--bg-tertiary)', color: 'var(--text-primary)' }}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </Field>
+          {settings.positional && <span className="text-muted" style={{ fontSize: '11px', lineHeight: 1.4 }}>Positional holds across days until an exit condition, stop/target, or the option's expiry.</span>}
           <Field label="Capital ₹"><input type="number" className="form-control" value={config.initial_capital} onChange={e => setConfig(c => ({ ...c, initial_capital: parseInt(e.target.value) || 0 }))} /></Field>
           <div className="flex gap-4">
             <Field label="Slippage %" grow><input type="number" step="0.01" className="form-control" value={config.slippage_pct} onChange={e => setConfig(c => ({ ...c, slippage_pct: parseFloat(e.target.value) || 0 }))} /></Field>

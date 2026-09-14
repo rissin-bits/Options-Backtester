@@ -492,6 +492,7 @@ def _build_custom_strategy(cfg):
             name=cfg.name, cases=cases, square_off_time=cfg.square_off_time,
             overall_stop_loss=cfg.overall_stop_loss,
             overall_take_profit=cfg.overall_take_profit,
+            positional=cfg.positional,
         )
 
     # Single case (Entry-When = AND, Exit-When = OR).
@@ -506,6 +507,7 @@ def _build_custom_strategy(cfg):
         exit_condition=_or_of(cfg.exit_conditions),
         overall_stop_loss=cfg.overall_stop_loss,
         overall_take_profit=cfg.overall_take_profit,
+        positional=cfg.positional,
     )
 
 
