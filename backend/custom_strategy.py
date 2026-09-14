@@ -127,3 +127,75 @@ class CustomLegStrategy(Strategy):
 
         self._entries_today += 1
         return list(self.legs)
+
+
+class MultiCaseStrategy(Strategy):
+    """
+    Several independent cases running in parallel in one backtest.
+
+    Each case has its own legs, entry time/condition, exit condition and
+    re-entry, and its positions are tagged with a per-case prefix so the engine
+    can close just that case (via the {"close_tags": [...]} result) when its
+    exit fires — the other cases keep running. Square-off time and overall/daily
+    targets are shared across all cases.
+    """
+
+    def __init__(self, name="Multi-case Strategy", cases=None,
+                 square_off_time="15:15", overall_stop_loss=None,
+                 overall_take_profit=None):
+        self.name = name
+        self.cases = cases or []   # list of dicts (see api._build_custom_strategy)
+        self.square_off = _hhmm(square_off_time, time(15, 15))
+        self.overall_sl = overall_stop_loss
+        self.overall_tp = overall_take_profit
+        self._entries = [0] * len(self.cases)
+
+    def on_day_start(self, ctx):
+        self._entries = [0] * len(self.cases)
+
+    def required_indicators(self):
+        out = []
+        for case in self.cases:
+            out.extend(_collect_indicators(case.get("entry_condition")))
+            out.extend(_collect_indicators(case.get("exit_condition")))
+        return out
+
+    def on_candle(self, ctx):
+        t = ctx.time_of_day
+        if t >= self.square_off:
+            return "SQUARE_OFF_ALL" if ctx.positions else None
+
+        if ctx.positions and (self.overall_sl is not None or self.overall_tp is not None):
+            combined = sum(p.unrealized_pnl for p in ctx.positions)
+            if self.overall_tp is not None and combined >= abs(self.overall_tp):
+                return "SQUARE_OFF_ALL"
+            if self.overall_sl is not None and combined <= -abs(self.overall_sl):
+                return "SQUARE_OFF_ALL"
+
+        open_orders, close_tags = [], []
+        for i, case in enumerate(self.cases):
+            prefix = case["prefix"]
+            live = [p for p in ctx.positions if p.tag and p.tag.startswith(prefix)]
+
+            # Exit-When for this case → close only its legs.
+            if live and case.get("exit_condition") is not None \
+                    and case["exit_condition"].evaluate(ctx):
+                close_tags.append(prefix)
+                continue
+            if live:
+                continue  # case is running; leave per-leg risk to the engine
+
+            # Entry for this case.
+            if t < case["entry_after"]:
+                continue
+            if self._entries[i] >= case["max_entries"]:
+                continue
+            if case.get("entry_condition") is not None \
+                    and not case["entry_condition"].evaluate(ctx):
+                continue
+            self._entries[i] += 1
+            open_orders.extend(case["legs"])
+
+        if open_orders or close_tags:
+            return {"open": open_orders, "close_tags": close_tags}
+        return None

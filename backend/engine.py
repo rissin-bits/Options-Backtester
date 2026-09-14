@@ -371,9 +371,18 @@ class BacktestEngine:
                 # Call strategy
                 result = strategy.on_candle(ctx)
 
-                # Process result
+                # Process result. A strategy may return:
+                #   "SQUARE_OFF_ALL"          -> close everything
+                #   [Order, ...]              -> open these legs
+                #   {"close_tags": [...],       -> close legs whose tag starts with
+                #    "open": [Order, ...]}         a prefix, then open (parallel cases)
                 if result == "SQUARE_OFF_ALL":
                     self._square_off_all(data, ts_pd, "strategy_exit")
+                elif isinstance(result, dict):
+                    for prefix in result.get("close_tags", []):
+                        self._close_by_tag(data, ts_pd, prefix, "case_exit")
+                    if result.get("open"):
+                        self._process_orders(result["open"], data, ts_pd, chain, spot, ctx)
                 elif isinstance(result, list) and result:
                     self._process_orders(result, data, ts_pd, chain, spot, ctx)
 
@@ -513,6 +522,14 @@ class BacktestEngine:
                 reason = "leg_stop_loss"
 
             if reason:
+                self._close_position(pos, data, timestamp, reason)
+                self.positions.remove(pos)
+
+    def _close_by_tag(self, data: pd.DataFrame, timestamp: pd.Timestamp,
+                      prefix: str, reason: str = ""):
+        """Close positions whose tag starts with `prefix` (one parallel case)."""
+        for pos in list(self.positions):
+            if pos.tag and pos.tag.startswith(prefix):
                 self._close_position(pos, data, timestamp, reason)
                 self.positions.remove(pos)
 

@@ -112,6 +112,17 @@ class LegModel(BaseModel):
     tag: str = ""
 
 
+class CaseModel(BaseModel):
+    """One parallel case: its own legs, entry timing/logic and exit logic."""
+    name: str = "Case"
+    legs: List[LegModel] = []
+    entry_time: str = "09:20"
+    max_entries_per_day: int = 1
+    re_entry: bool = False
+    entry_conditions: List[ConditionModel] = []
+    exit_conditions: List[ConditionModel] = []
+
+
 class CustomStrategyModel(BaseModel):
     """A user-built multi-leg strategy assembled in the Backtest builder."""
     name: str = "Custom Strategy"
@@ -120,6 +131,9 @@ class CustomStrategyModel(BaseModel):
     square_off_time: str = "15:15"
     max_entries_per_day: int = 1
     re_entry: bool = False
+    # Parallel cases. When non-empty, these run side by side and the top-level
+    # legs/conditions above are ignored (square_off + targets stay shared).
+    cases: List[CaseModel] = []
     # Optional Entry-When (all must hold, on top of entry_time) and Exit-When
     # (any triggers a square-off) conditions, e.g. indicator or spot thresholds.
     entry_conditions: List[ConditionModel] = []

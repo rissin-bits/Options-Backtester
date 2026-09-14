@@ -20,7 +20,7 @@ import logging
 import math
 import traceback
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -456,17 +456,45 @@ def _order_from_leg(leg) -> Order:
     )
 
 
+def _and_of(conds):
+    return (AndCondition([Condition.from_dict(c.model_dump()) for c in conds])
+            if conds else None)
+
+
+def _or_of(conds):
+    return (OrCondition([Condition.from_dict(c.model_dump()) for c in conds])
+            if conds else None)
+
+
 def _build_custom_strategy(cfg):
-    from backend.custom_strategy import CustomLegStrategy
+    from backend.custom_strategy import CustomLegStrategy, MultiCaseStrategy, _hhmm
 
-    # Entry-When: every condition must hold (AND). Exit-When: any triggers (OR).
-    entry_cond = (AndCondition([Condition.from_dict(c.model_dump())
-                                for c in cfg.entry_conditions])
-                  if cfg.entry_conditions else None)
-    exit_cond = (OrCondition([Condition.from_dict(c.model_dump())
-                              for c in cfg.exit_conditions])
-                 if cfg.exit_conditions else None)
+    # Parallel cases: each runs independently with its legs tagged by a per-case
+    # prefix so the engine can close just that case on its own exit.
+    if cfg.cases:
+        cases = []
+        for i, case in enumerate(cfg.cases):
+            prefix = f"c{i}_"
+            legs = []
+            for leg in case.legs:
+                order = _order_from_leg(leg)
+                order.tag = prefix + (order.tag or "leg")
+                legs.append(order)
+            cases.append({
+                "prefix": prefix,
+                "legs": legs,
+                "entry_after": _hhmm(case.entry_time, time(9, 20)),
+                "max_entries": max(1, case.max_entries_per_day) if case.re_entry else 1,
+                "entry_condition": _and_of(case.entry_conditions),
+                "exit_condition": _or_of(case.exit_conditions),
+            })
+        return MultiCaseStrategy(
+            name=cfg.name, cases=cases, square_off_time=cfg.square_off_time,
+            overall_stop_loss=cfg.overall_stop_loss,
+            overall_take_profit=cfg.overall_take_profit,
+        )
 
+    # Single case (Entry-When = AND, Exit-When = OR).
     return CustomLegStrategy(
         name=cfg.name,
         legs=[_order_from_leg(leg) for leg in cfg.legs],
@@ -474,8 +502,8 @@ def _build_custom_strategy(cfg):
         square_off_time=cfg.square_off_time,
         max_entries_per_day=cfg.max_entries_per_day,
         re_entry=cfg.re_entry,
-        entry_condition=entry_cond,
-        exit_condition=exit_cond,
+        entry_condition=_and_of(cfg.entry_conditions),
+        exit_condition=_or_of(cfg.exit_conditions),
         overall_stop_loss=cfg.overall_stop_loss,
         overall_take_profit=cfg.overall_take_profit,
     )
@@ -493,7 +521,8 @@ def _resolve_strategy(request: BacktestRequest):
     Example strategies are module-level singletons that accumulate per-run state,
     so hand back a deep copy rather than the shared instance.
     """
-    if request.custom_strategy is not None and request.custom_strategy.legs:
+    if request.custom_strategy is not None and (
+            request.custom_strategy.legs or request.custom_strategy.cases):
         return _build_custom_strategy(request.custom_strategy)
 
     if request.strategy_id:
