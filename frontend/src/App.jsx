@@ -7,7 +7,8 @@ import Dashboard from './pages/Dashboard';
 import Results from './pages/Results';
 import CodeEditor from './pages/CodeEditor';
 import BacktestRunner from './pages/BacktestRunner';
-import { Settings, Play, Code2, BarChart3, LayoutDashboard, Terminal, FlaskConical } from 'lucide-react';
+import StrategyLab from './pages/StrategyLab';
+import { Settings, Play, Code2, BarChart3, LayoutDashboard, Terminal, FlaskConical, Wrench } from 'lucide-react';
 import './index.css';
 
 const API_BASE = window.location.origin;
@@ -153,6 +154,7 @@ function App() {
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Terminal', path: '/', icon: Terminal },
+    { name: 'Builder', path: '/builder', icon: Wrench },
     { name: 'Backtest', path: '/backtest', icon: FlaskConical },
     { name: 'Code', path: '/code', icon: Code2 },
     { name: 'Results', path: '/results', icon: BarChart3 },
@@ -202,6 +204,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Workspace legs={legs} setLegs={setLegs} handleAddLeg={handleAddLeg} chainContext={chainContext} setChainContext={setChainContext} />} />
         <Route path="/dashboard" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><Dashboard /></div>} />
+        <Route path="/builder" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><StrategyLab onResult={handleResult} /></div>} />
         <Route path="/backtest" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><BacktestRunner onResult={handleResult} /></div>} />
         <Route path="/code" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><CodeEditor /></div>} />
         <Route path="/results" element={<div style={{ flex: 1, overflow: 'auto', backgroundColor: 'var(--background)' }}><Results resultsData={latestResult} /></div>} />
