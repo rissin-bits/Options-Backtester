@@ -453,6 +453,10 @@ def _order_from_leg(leg) -> Order:
         take_profit_pct=leg.take_profit_pct,
         trailing_sl_pct=leg.trailing_sl_pct,
         move_to_cost_at_pct=leg.move_to_cost_at_pct,
+        # Premium/delta/fixed selection overrides moneyness when set.
+        strike_method=(leg.strike_method or None),
+        strike_value=leg.strike_value,
+        strike_dir=leg.strike_dir,
     )
 
 

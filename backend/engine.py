@@ -603,6 +603,12 @@ class BacktestEngine:
     def _resolve_strike(self, order: Order, chain: pd.DataFrame,
                         spot: float) -> Optional[float]:
         """Resolve strike selection to actual strike."""
+        # Premium- / delta- / fixed-based selection (from the builder).
+        if order.strike_method:
+            picked = self._select_by_method(order, chain, spot)
+            if picked is not None:
+                return picked
+
         # If custom fixed strike
         if order.strike_selection == StrikeSelection.FIXED and order.fixed_strike is not None:
             return order.fixed_strike
@@ -621,6 +627,53 @@ class BacktestEngine:
         return self.loader.select_strike(
             chain, spot, order.option_type.value, "ATM", offset
         )
+
+    @staticmethod
+    def _pick_strike(rows: pd.DataFrame, col: str, target: float, direction: str):
+        """Pick a strike from `rows` by column `col` vs target (near/gte/lte)."""
+        if direction == "gte":
+            cand = rows[rows[col] >= target]
+            r = cand.loc[cand[col].idxmin()] if not cand.empty else rows.loc[rows[col].idxmax()]
+        elif direction == "lte":
+            cand = rows[rows[col] <= target]
+            r = cand.loc[cand[col].idxmax()] if not cand.empty else rows.loc[rows[col].idxmin()]
+        else:  # "near"
+            r = rows.loc[(rows[col] - target).abs().idxmin()]
+        return float(r["strike"])
+
+    def _select_by_method(self, order: Order, chain: pd.DataFrame,
+                          spot: float) -> Optional[float]:
+        """Strike selection by fixed price, premium or delta (nearest expiry)."""
+        if chain is None or chain.empty or order.strike_value is None:
+            return None
+        sub = chain[chain["option_type"] == order.option_type.value]
+        if sub.empty:
+            return None
+        # Restrict to the nearest expiry so premium/delta match the traded leg.
+        if "expiry" in sub.columns:
+            expiries = sorted(sub["expiry"].dropna().unique())
+            if expiries:
+                sub = sub[sub["expiry"] == expiries[0]]
+        target = float(order.strike_value)
+        direction = (order.strike_dir or "near").lower()
+
+        if order.strike_method == "fixed":
+            strikes = sub["strike"].dropna().unique()
+            return float(min(strikes, key=lambda s: abs(s - target))) if len(strikes) else None
+
+        if order.strike_method == "premium":
+            rows = sub[["strike", "close"]].dropna()
+            rows = rows[rows["close"] > 0]
+            return self._pick_strike(rows, "close", target, direction) if not rows.empty else None
+
+        if order.strike_method == "delta":
+            enriched = self.loader.enrich_chain_with_greeks(sub.copy(), spot)
+            rows = enriched[["strike", "delta"]].dropna()
+            if rows.empty:
+                return None
+            rows = rows.assign(_ad=rows["delta"].abs())
+            return self._pick_strike(rows.rename(columns={"_ad": "absdelta"}), "absdelta", abs(target), direction)
+        return None
 
     def _resolve_expiry(self, order: Order, chain: pd.DataFrame,
                         timestamp: pd.Timestamp) -> Optional[str]:

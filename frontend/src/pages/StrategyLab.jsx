@@ -7,9 +7,39 @@ const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v)
 const OPERATORS = ['<', '<=', '>', '>=', '=='];
 
 const newLeg = (over = {}) => ({
-  id: rid(), side: 'SELL', option_type: 'CE', moneyness: 'ATM', strike_offset: 0, lots: 1,
+  id: rid(), side: 'SELL', option_type: 'CE', strikeBy: 'ATM', strikeVal: '', lots: 1,
   stop_loss_pct: '', take_profit_pct: '', trailing_sl_pct: '', move_to_cost_at_pct: '', tag: '', ...over,
 });
+
+// Strike-selection methods offered per leg.
+const STRIKE_BY = [
+  { v: 'ATM', label: 'ATM' }, { v: 'OTM', label: 'OTM' }, { v: 'ITM', label: 'ITM' },
+  { v: 'FIXED', label: 'Fixed' },
+  { v: 'PREM_NEAR', label: 'Prem ≈' }, { v: 'PREM_GTE', label: 'Prem ≥' }, { v: 'PREM_LTE', label: 'Prem ≤' },
+  { v: 'DELTA_NEAR', label: 'Delta ≈' }, { v: 'DELTA_GTE', label: 'Delta ≥' }, { v: 'DELTA_LTE', label: 'Delta ≤' },
+];
+// What the "Value" box means for each method (label + placeholder). ATM needs none.
+const STRIKE_VAL_HINT = {
+  ATM: '', OTM: 'strikes', ITM: 'strikes', FIXED: 'strike ₹',
+  PREM_NEAR: '₹', PREM_GTE: '₹', PREM_LTE: '₹',
+  DELTA_NEAR: '0–1', DELTA_GTE: '0–1', DELTA_LTE: '0–1',
+};
+// Map the leg's strike choice to the backend leg fields.
+function legStrikePayload(l) {
+  const val = Number(l.strikeVal) || 0;
+  switch (l.strikeBy) {
+    case 'OTM': return { moneyness: 'OTM', strike_offset: val };
+    case 'ITM': return { moneyness: 'ITM', strike_offset: val };
+    case 'FIXED': return { strike_method: 'fixed', strike_value: val };
+    case 'PREM_NEAR': return { strike_method: 'premium', strike_dir: 'near', strike_value: val };
+    case 'PREM_GTE': return { strike_method: 'premium', strike_dir: 'gte', strike_value: val };
+    case 'PREM_LTE': return { strike_method: 'premium', strike_dir: 'lte', strike_value: val };
+    case 'DELTA_NEAR': return { strike_method: 'delta', strike_dir: 'near', strike_value: val };
+    case 'DELTA_GTE': return { strike_method: 'delta', strike_dir: 'gte', strike_value: val };
+    case 'DELTA_LTE': return { strike_method: 'delta', strike_dir: 'lte', strike_value: val };
+    default: return { moneyness: 'ATM', strike_offset: 0 };
+  }
+}
 const newCond = (over = {}) => ({
   id: rid(), kind: 'indicator', indicator_name: 'RSI', period: 14, operator: '<', value: '', ...over,
 });
@@ -81,8 +111,7 @@ export default function StrategyLab({ onResult }) {
     name: c.name, entry_time: c.entry_time,
     max_entries_per_day: Number(c.max_entries_per_day) || 1, re_entry: c.re_entry,
     legs: c.legs.map(l => ({
-      side: l.side, option_type: l.option_type, moneyness: l.moneyness,
-      strike_offset: Number(l.strike_offset) || 0, lots: Number(l.lots) || 1,
+      side: l.side, option_type: l.option_type, ...legStrikePayload(l), lots: Number(l.lots) || 1,
       stop_loss_pct: num(l.stop_loss_pct), take_profit_pct: num(l.take_profit_pct),
       trailing_sl_pct: num(l.trailing_sl_pct), move_to_cost_at_pct: num(l.move_to_cost_at_pct), tag: l.tag || '',
     })),
@@ -183,14 +212,14 @@ export default function StrategyLab({ onResult }) {
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', minWidth: '760px', borderCollapse: 'collapse' }}>
-                <thead><tr>{['Side', 'Type', 'Strike', 'Off', 'Lots', 'SL %', 'TP %', 'Trail %', '→Cost %', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
+                <thead><tr>{['Side', 'Type', 'Strike By', 'Value', 'Lots', 'SL %', 'TP %', 'Trail %', '→Cost %', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
                 <tbody>
                   {active.legs.map(l => (
                     <tr key={l.id}>
                       <td style={{ padding: '3px' }}><select style={{ ...cell, color: l.side === 'SELL' ? 'var(--accent-red-light)' : 'var(--accent-green-light)' }} value={l.side} onChange={e => setLeg(l.id, 'side', e.target.value)}><option>BUY</option><option>SELL</option></select></td>
                       <td style={{ padding: '3px' }}><select style={cell} value={l.option_type} onChange={e => setLeg(l.id, 'option_type', e.target.value)}><option>CE</option><option>PE</option></select></td>
-                      <td style={{ padding: '3px' }}><select style={cell} value={l.moneyness} onChange={e => setLeg(l.id, 'moneyness', e.target.value)}><option>ATM</option><option>OTM</option><option>ITM</option></select></td>
-                      <td style={{ padding: '3px', width: '52px' }}><input type="number" min="0" style={cell} value={l.strike_offset} disabled={l.moneyness === 'ATM'} onChange={e => setLeg(l.id, 'strike_offset', e.target.value)} /></td>
+                      <td style={{ padding: '3px' }}><select style={cell} value={l.strikeBy} onChange={e => setLeg(l.id, 'strikeBy', e.target.value)}>{STRIKE_BY.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}</select></td>
+                      <td style={{ padding: '3px', width: '66px' }}><input type="number" step="any" style={cell} placeholder={STRIKE_VAL_HINT[l.strikeBy] || ''} value={l.strikeVal} disabled={l.strikeBy === 'ATM'} onChange={e => setLeg(l.id, 'strikeVal', e.target.value)} title={STRIKE_VAL_HINT[l.strikeBy]} /></td>
                       <td style={{ padding: '3px', width: '56px' }}><input type="number" min="1" style={cell} value={l.lots} onChange={e => setLeg(l.id, 'lots', e.target.value)} /></td>
                       <td style={{ padding: '3px', width: '62px' }}><input type="number" placeholder="—" style={cell} value={l.stop_loss_pct} onChange={e => setLeg(l.id, 'stop_loss_pct', e.target.value)} /></td>
                       <td style={{ padding: '3px', width: '62px' }}><input type="number" placeholder="—" style={cell} value={l.take_profit_pct} onChange={e => setLeg(l.id, 'take_profit_pct', e.target.value)} /></td>

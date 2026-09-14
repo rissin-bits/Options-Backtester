@@ -90,6 +90,13 @@ class Order:
     take_profit_pct: Optional[float] = None   # exit this leg at +X% of entry premium
     trailing_sl_pct: Optional[float] = None   # trail the stop by X% behind the peak
     move_to_cost_at_pct: Optional[float] = None  # once +X% profit, move SL to breakeven
+    # Alternative strike selection (overrides strike_selection when set):
+    #   "fixed"   -> the strike nearest strike_value
+    #   "premium" -> by option premium (strike_dir: near / gte / lte of strike_value ₹)
+    #   "delta"   -> by |delta|         (strike_dir: near / gte / lte of strike_value)
+    strike_method: Optional[str] = None
+    strike_value: Optional[float] = None
+    strike_dir: str = "near"   # "near" | "gte" | "lte"
 
 
 @dataclass

@@ -102,6 +102,11 @@ class LegModel(BaseModel):
     option_type: OptionTypeEnum = OptionTypeEnum.CE
     moneyness: str = "ATM"            # "ATM" | "OTM" | "ITM"
     strike_offset: int = 0            # strikes away from ATM (for OTM/ITM)
+    # Alternative strike selection. When strike_method is "fixed"/"premium"/
+    # "delta" it overrides moneyness; strike_dir is "near"/"gte"/"lte".
+    strike_method: Optional[str] = None
+    strike_value: Optional[float] = None
+    strike_dir: str = "near"
     expiry_selection: str = "nearest"  # "nearest" | "next" | "monthly"
     lots: int = 1
     # Per-leg risk (percent of entry premium; None = disabled)
