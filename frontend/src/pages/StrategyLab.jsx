@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { API_BASE } from '../App';
-import { Play, Plus, X, Layers } from 'lucide-react';
+import { Play, Plus, X, Layers, Save, Trash2 } from 'lucide-react';
 
 // A fresh leg with sensible defaults.
 const newLeg = (over = {}) => ({
@@ -48,8 +48,41 @@ export default function StrategyLab({ onResult }) {
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState(null);
   const [warnings, setWarnings] = useState([]);
+  const [saved, setSaved] = useState([]);
+  const [currentId, setCurrentId] = useState(null);  // id of a loaded/saved strategy
   const wsRef = useRef(null);
   useEffect(() => () => wsRef.current?.close(), []);
+
+  const refreshSaved = () => fetch(`${API_BASE}/api/builder/strategies`).then(r => r.json()).then(d => setSaved(Array.isArray(d) ? d : [])).catch(() => {});
+  useEffect(() => { refreshSaved(); }, []);
+
+  const saveStrategy = () => {
+    const payload = { legs, settings, targets, entryConds, exitConds, config };
+    fetch(`${API_BASE}/api/builder/strategies`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: currentId, name: settings.name || 'Untitled', payload }),
+    }).then(r => r.json()).then(rec => { setCurrentId(rec.id); refreshSaved(); }).catch(() => setError('Could not save.'));
+  };
+
+  const loadStrategy = (sid) => {
+    if (!sid) return;
+    fetch(`${API_BASE}/api/builder/strategies/${sid}`).then(r => r.json()).then(rec => {
+      const p = rec.payload || {};
+      if (p.legs) setLegs(p.legs);
+      if (p.settings) setSettings(p.settings);
+      if (p.targets) setTargets(p.targets);
+      if (p.entryConds) setEntryConds(p.entryConds);
+      if (p.exitConds) setExitConds(p.exitConds);
+      if (p.config) setConfig(c => ({ ...c, ...p.config }));
+      setCurrentId(rec.id);
+    }).catch(() => setError('Could not load.'));
+  };
+
+  const deleteStrategy = () => {
+    if (!currentId) return;
+    fetch(`${API_BASE}/api/builder/strategies/${currentId}`, { method: 'DELETE' })
+      .then(() => { setCurrentId(null); refreshSaved(); }).catch(() => {});
+  };
 
   useEffect(() => {
     fetch(`${API_BASE}/api/data/underlyings`).then(r => r.json())
@@ -110,8 +143,19 @@ export default function StrategyLab({ onResult }) {
     <div style={{ display: 'flex', gap: '16px', padding: '16px', height: '100%', boxSizing: 'border-box', overflow: 'hidden' }}>
       {/* Builder */}
       <div className="panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div className="panel-header" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Layers size={15} /> Strategy Builder
+        <div className="panel-header" style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Layers size={15} /> Strategy Builder</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <select className="form-control form-select" style={{ fontSize: '12px', padding: '4px 8px', maxWidth: '160px' }}
+                    value={currentId || ''} onChange={e => loadStrategy(e.target.value)} title="Load a saved strategy">
+              <option value="">My Strategies…</option>
+              {saved.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <button className="btn btn-sm btn-ghost" onClick={saveStrategy} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}>
+              <Save size={13} /> {currentId ? 'Update' : 'Save'}
+            </button>
+            {currentId && <button className="btn btn-sm btn-ghost" onClick={deleteStrategy} title="Delete saved" style={{ padding: '4px 6px' }}><Trash2 size={13} /></button>}
+          </div>
         </div>
         <div style={{ overflow: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
           {/* Legs table */}

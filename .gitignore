@@ -22,3 +22,6 @@ upstox_token.txt
 frontend/node_modules/
 frontend/dist/
 .claude/launch.json
+
+# saved builder strategies (local state)
+saved_builder_strategies.json

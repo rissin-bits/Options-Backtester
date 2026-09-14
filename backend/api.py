@@ -44,6 +44,7 @@ from backend.strategy import (
 )
 from backend.example_strategies import EXAMPLE_STRATEGIES
 from backend.strategy_templates import TEMPLATES, list_templates, build_strategy
+from backend import builder_store
 from backend.monte_carlo import run_monte_carlo
 from backend.stress_test import run_stress_tests
 
@@ -280,6 +281,37 @@ async def get_strategy_templates():
     The Backtest tab renders these as editable forms.
     """
     return list_templates()
+
+
+class SavedStrategyRequest(BaseModel):
+    """Save a built strategy. `payload` is the opaque Builder state."""
+    name: str = "Untitled"
+    payload: Dict[str, Any] = {}
+    id: Optional[str] = None
+
+
+@app.get("/api/builder/strategies")
+async def builder_list_strategies():
+    """List saved builder strategies (My Strategies)."""
+    return builder_store.list_strategies()
+
+
+@app.get("/api/builder/strategies/{sid}")
+async def builder_get_strategy(sid: str):
+    rec = builder_store.get_strategy(sid)
+    if not rec:
+        raise HTTPException(404, "Strategy not found")
+    return rec
+
+
+@app.post("/api/builder/strategies")
+async def builder_save_strategy(req: SavedStrategyRequest):
+    return builder_store.save_strategy(req.name, req.payload, req.id)
+
+
+@app.delete("/api/builder/strategies/{sid}")
+async def builder_delete_strategy(sid: str):
+    return {"deleted": builder_store.delete_strategy(sid)}
 
 
 @app.post("/api/strategies/templates/{template_id}/preview")
