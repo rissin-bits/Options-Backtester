@@ -120,6 +120,10 @@ class CustomStrategyModel(BaseModel):
     square_off_time: str = "15:15"
     max_entries_per_day: int = 1
     re_entry: bool = False
+    # Optional Entry-When (all must hold, on top of entry_time) and Exit-When
+    # (any triggers a square-off) conditions, e.g. indicator or spot thresholds.
+    entry_conditions: List[ConditionModel] = []
+    exit_conditions: List[ConditionModel] = []
 
 
 # ──────────────────────────────────────────────────────────────

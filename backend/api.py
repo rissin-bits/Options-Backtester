@@ -40,7 +40,7 @@ from backend.models import (
 )
 from backend.strategy import (
     RuleBasedStrategy, Rule, Condition, Order, Side, OptionType,
-    StrikeSelection, OrderType,
+    StrikeSelection, OrderType, AndCondition, OrCondition,
 )
 from backend.example_strategies import EXAMPLE_STRATEGIES
 from backend.strategy_templates import TEMPLATES, list_templates, build_strategy
@@ -426,6 +426,15 @@ def _order_from_leg(leg) -> Order:
 
 def _build_custom_strategy(cfg):
     from backend.custom_strategy import CustomLegStrategy
+
+    # Entry-When: every condition must hold (AND). Exit-When: any triggers (OR).
+    entry_cond = (AndCondition([Condition.from_dict(c.model_dump())
+                                for c in cfg.entry_conditions])
+                  if cfg.entry_conditions else None)
+    exit_cond = (OrCondition([Condition.from_dict(c.model_dump())
+                              for c in cfg.exit_conditions])
+                 if cfg.exit_conditions else None)
+
     return CustomLegStrategy(
         name=cfg.name,
         legs=[_order_from_leg(leg) for leg in cfg.legs],
@@ -433,6 +442,8 @@ def _build_custom_strategy(cfg):
         square_off_time=cfg.square_off_time,
         max_entries_per_day=cfg.max_entries_per_day,
         re_entry=cfg.re_entry,
+        entry_condition=entry_cond,
+        exit_condition=exit_cond,
     )
 
 

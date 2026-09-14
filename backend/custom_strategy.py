@@ -15,7 +15,29 @@ from typing import List, Optional, Union
 
 from backend.strategy import (
     Strategy, MarketContext, Order, Condition,
+    IndicatorCondition, AndCondition, OrCondition, NotCondition,
 )
+
+
+def _collect_indicators(condition: Optional[Condition]) -> List[dict]:
+    """Recursively gather the indicators a condition tree needs pre-computed."""
+    if condition is None:
+        return []
+    if isinstance(condition, IndicatorCondition):
+        return [{
+            "name": condition.indicator_name,
+            "params": condition.params,
+            "input": condition.input_field,
+            "output_key": condition.output_key,
+        }]
+    if isinstance(condition, (AndCondition, OrCondition)):
+        out = []
+        for c in condition.conditions:
+            out.extend(_collect_indicators(c))
+        return out
+    if isinstance(condition, NotCondition):
+        return _collect_indicators(condition.condition)
+    return []
 
 
 def _hhmm(value, fallback: time) -> time:
@@ -41,6 +63,7 @@ class CustomLegStrategy(Strategy):
         max_entries_per_day: int = 1,
         re_entry: bool = False,
         entry_condition: Optional[Condition] = None,
+        exit_condition: Optional[Condition] = None,
     ):
         self.name = name
         self.description = description
@@ -51,14 +74,14 @@ class CustomLegStrategy(Strategy):
         # per-day cap. Without it, one batch per day.
         self.re_entry = bool(re_entry)
         self.max_entries = max(1, int(max_entries_per_day)) if re_entry else 1
-        self.entry_condition = entry_condition
+        self.entry_condition = entry_condition   # extra gate on top of entry_time
+        self.exit_condition = exit_condition     # when true, square off the batch
         self._entries_today = 0
 
     def required_indicators(self):
-        # Any indicators referenced by the (optional) entry condition.
-        if self.entry_condition and hasattr(self.entry_condition, "required_indicators"):
-            return self.entry_condition.required_indicators()
-        return []
+        # Indicators referenced by either the entry or exit condition tree.
+        return (_collect_indicators(self.entry_condition)
+                + _collect_indicators(self.exit_condition))
 
     def on_day_start(self, ctx: MarketContext):
         self._entries_today = 0
@@ -69,6 +92,11 @@ class CustomLegStrategy(Strategy):
         # End of the trade window → flatten and stop for the day.
         if t >= self.square_off:
             return "SQUARE_OFF_ALL" if ctx.positions else None
+
+        # Exit-When: a live batch is squared off as soon as the exit rule fires.
+        if ctx.positions and self.exit_condition is not None:
+            if self.exit_condition.evaluate(ctx):
+                return "SQUARE_OFF_ALL"
 
         # Not yet in the entry window.
         if t < self.entry_after:

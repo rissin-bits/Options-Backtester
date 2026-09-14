@@ -12,6 +12,14 @@ const newLeg = (over = {}) => ({
 
 const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
 
+// A fresh condition row.
+const newCond = (over = {}) => ({
+  id: Math.random().toString(36).slice(2, 9),
+  kind: 'indicator', indicator_name: 'RSI', period: 14, operator: '<', value: '',
+  ...over,
+});
+const OPERATORS = ['<', '<=', '>', '>=', '=='];
+
 const cell = { background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '4px 6px', borderRadius: '4px', outline: 'none', fontSize: '12px', width: '100%' };
 
 export default function StrategyLab({ onResult }) {
@@ -29,6 +37,9 @@ export default function StrategyLab({ onResult }) {
     slippage_pct: 0.05, commission_per_lot: 20,
   });
   const [underlyings, setUnderlyings] = useState(['NIFTY']);
+  const [indicators, setIndicators] = useState([]);
+  const [entryConds, setEntryConds] = useState([]);
+  const [exitConds, setExitConds] = useState([]);
 
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -42,7 +53,16 @@ export default function StrategyLab({ onResult }) {
     fetch(`${API_BASE}/api/data/underlyings`).then(r => r.json())
       .then(d => { if (d?.length) { setUnderlyings(d.map(u => u.name)); setConfig(c => ({ ...c, underlying: d[0].name })); } })
       .catch(() => {});
+    fetch(`${API_BASE}/api/indicators`).then(r => r.json())
+      .then(d => setIndicators(Array.isArray(d) ? d : []))
+      .catch(() => {});
   }, []);
+
+  // Convert a UI condition row to the backend ConditionModel shape.
+  const condToModel = (c) => c.kind === 'spot'
+    ? { type: 'price', field: 'spot', operator: c.operator, value: Number(c.value) }
+    : { type: 'indicator', indicator_name: c.indicator_name, params: { period: Number(c.period) || 14 },
+        input_field: 'close', operator: c.operator, value: Number(c.value) };
 
   const setLeg = (id, field, val) => setLegs(ls => ls.map(l => l.id === id ? { ...l, [field]: val } : l));
   const addLeg = () => setLegs(ls => [...ls, newLeg({ tag: `leg${ls.length + 1}` })]);
@@ -64,6 +84,8 @@ export default function StrategyLab({ onResult }) {
         trailing_sl_pct: num(l.trailing_sl_pct), move_to_cost_at_pct: num(l.move_to_cost_at_pct),
         tag: l.tag || '',
       })),
+      entry_conditions: entryConds.filter(c => c.value !== '').map(condToModel),
+      exit_conditions: exitConds.filter(c => c.value !== '').map(condToModel),
     };
     const ws = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/backtest`);
     wsRef.current = ws;
@@ -137,6 +159,18 @@ export default function StrategyLab({ onResult }) {
               </Field>
             </div>
           </div>
+
+          {/* Entry-When conditions (all must hold) */}
+          <ConditionList
+            title="Entry When (all true)" conditions={entryConds} setConditions={setEntryConds}
+            indicators={indicators}
+            hint="Extra gate on top of the entry time — enter only when every condition holds. Leave empty to enter purely on time." />
+
+          {/* Exit-When conditions (any triggers) */}
+          <ConditionList
+            title="Exit When (any true)" conditions={exitConds} setConditions={setExitConds}
+            indicators={indicators}
+            hint="Square off the whole batch as soon as any condition triggers (in addition to per-leg stops and the square-off time)." />
         </div>
       </div>
 
@@ -182,3 +216,42 @@ function Field({ label, children, grow }) {
     </div>
   );
 }
+
+function ConditionList({ title, conditions, setConditions, indicators, hint }) {
+  const set = (id, field, val) => setConditions(cs => cs.map(c => c.id === id ? { ...c, [field]: val } : c));
+  const add = () => setConditions(cs => [...cs, newCond()]);
+  const remove = (id) => setConditions(cs => cs.filter(c => c.id !== id));
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', fontWeight: 700 }}>{title}</span>
+        <button className="btn btn-sm btn-ghost" onClick={add} style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}><Plus size={12} /> Add condition</button>
+      </div>
+      {conditions.length === 0 ? (
+        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{hint}</div>
+      ) : conditions.map(c => (
+        <div key={c.id} style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap' }}>
+          <select style={cell2} value={c.kind} onChange={e => set(c.id, 'kind', e.target.value)}>
+            <option value="indicator">Indicator</option>
+            <option value="spot">Spot price</option>
+          </select>
+          {c.kind === 'indicator' && (
+            <>
+              <select style={{ ...cell2, minWidth: '90px' }} value={c.indicator_name} onChange={e => set(c.id, 'indicator_name', e.target.value)}>
+                {(indicators.length ? indicators.map(i => i.name) : ['RSI', 'SMA', 'EMA', 'VWAP']).map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <input type="number" style={{ ...cell2, width: '58px' }} title="Period" value={c.period} onChange={e => set(c.id, 'period', e.target.value)} />
+            </>
+          )}
+          <select style={{ ...cell2, width: '54px' }} value={c.operator} onChange={e => set(c.id, 'operator', e.target.value)}>
+            {OPERATORS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <input type="number" placeholder="value" style={{ ...cell2, width: '80px' }} value={c.value} onChange={e => set(c.id, 'value', e.target.value)} />
+          <button className="btn btn-sm btn-ghost" onClick={() => remove(c.id)} style={{ padding: '2px 6px' }}><X size={13} /></button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const cell2 = { background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '5px 7px', borderRadius: '4px', outline: 'none', fontSize: '12px' };
