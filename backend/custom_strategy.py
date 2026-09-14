@@ -64,6 +64,8 @@ class CustomLegStrategy(Strategy):
         re_entry: bool = False,
         entry_condition: Optional[Condition] = None,
         exit_condition: Optional[Condition] = None,
+        overall_stop_loss: Optional[float] = None,   # ₹ loss on the combined batch
+        overall_take_profit: Optional[float] = None,  # ₹ profit on the combined batch
     ):
         self.name = name
         self.description = description
@@ -76,6 +78,8 @@ class CustomLegStrategy(Strategy):
         self.max_entries = max(1, int(max_entries_per_day)) if re_entry else 1
         self.entry_condition = entry_condition   # extra gate on top of entry_time
         self.exit_condition = exit_condition     # when true, square off the batch
+        self.overall_sl = overall_stop_loss
+        self.overall_tp = overall_take_profit
         self._entries_today = 0
 
     def required_indicators(self):
@@ -92,6 +96,15 @@ class CustomLegStrategy(Strategy):
         # End of the trade window → flatten and stop for the day.
         if t >= self.square_off:
             return "SQUARE_OFF_ALL" if ctx.positions else None
+
+        # Overall (per-trade) target: close the whole batch when its combined
+        # open P&L crosses the ₹ stop-loss or take-profit.
+        if ctx.positions and (self.overall_sl is not None or self.overall_tp is not None):
+            combined = sum(p.unrealized_pnl for p in ctx.positions)
+            if self.overall_tp is not None and combined >= abs(self.overall_tp):
+                return "SQUARE_OFF_ALL"
+            if self.overall_sl is not None and combined <= -abs(self.overall_sl):
+                return "SQUARE_OFF_ALL"
 
         # Exit-When: a live batch is squared off as soon as the exit rule fires.
         if ctx.positions and self.exit_condition is not None:

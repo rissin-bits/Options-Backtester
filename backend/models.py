@@ -124,6 +124,9 @@ class CustomStrategyModel(BaseModel):
     # (any triggers a square-off) conditions, e.g. indicator or spot thresholds.
     entry_conditions: List[ConditionModel] = []
     exit_conditions: List[ConditionModel] = []
+    # Overall (per-trade) targets on the combined batch P&L, in ₹.
+    overall_stop_loss: Optional[float] = None
+    overall_take_profit: Optional[float] = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -150,6 +153,8 @@ class BacktestRequest(BaseModel):
     commission_per_lot: float = 20.0
     max_loss_per_day: Optional[float] = None
     max_loss_per_day_pct: Optional[float] = None
+    max_profit_per_day: Optional[float] = None
+    max_profit_per_day_pct: Optional[float] = None
 
 
 class TradeModel(BaseModel):

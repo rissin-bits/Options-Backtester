@@ -31,6 +31,8 @@ export default function StrategyLab({ onResult }) {
     name: 'My Strategy', entry_time: '09:20', square_off_time: '15:15',
     max_entries_per_day: 1, re_entry: false,
   });
+  // Overall (per-trade) and daily targets, all in ₹. Blank = disabled.
+  const [targets, setTargets] = useState({ overall_sl: '', overall_tp: '', daily_sl: '', daily_tp: '' });
   const [config, setConfig] = useState({
     underlying: 'NIFTY', start_date: '2024-10-01', end_date: '2024-10-31',
     initial_capital: 1000000, lot_size: 25, granularity: '1min',
@@ -86,10 +88,13 @@ export default function StrategyLab({ onResult }) {
       })),
       entry_conditions: entryConds.filter(c => c.value !== '').map(condToModel),
       exit_conditions: exitConds.filter(c => c.value !== '').map(condToModel),
+      overall_stop_loss: num(targets.overall_sl),
+      overall_take_profit: num(targets.overall_tp),
     };
     const ws = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/backtest`);
     wsRef.current = ws;
-    ws.onopen = () => { setStatusMsg('Running…'); ws.send(JSON.stringify({ ...config, custom_strategy })); };
+    const daily = { max_loss_per_day: num(targets.daily_sl), max_profit_per_day: num(targets.daily_tp) };
+    ws.onopen = () => { setStatusMsg('Running…'); ws.send(JSON.stringify({ ...config, ...daily, custom_strategy })); };
     ws.onmessage = (e) => {
       const d = JSON.parse(e.data);
       if (d.type === 'progress') { setProgress(d.progress); setStatusMsg(d.message); }
@@ -171,6 +176,18 @@ export default function StrategyLab({ onResult }) {
             title="Exit When (any true)" conditions={exitConds} setConditions={setExitConds}
             indicators={indicators}
             hint="Square off the whole batch as soon as any condition triggers (in addition to per-leg stops and the square-off time)." />
+
+          {/* Targets */}
+          <div>
+            <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', fontWeight: 700 }}>Targets (₹)</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px', marginTop: '8px' }}>
+              <Field label="Per-trade stop-loss"><input type="number" placeholder="—" className="form-control" value={targets.overall_sl} onChange={e => setTargets(t => ({ ...t, overall_sl: e.target.value }))} title="Close all legs when the batch's combined loss reaches this ₹" /></Field>
+              <Field label="Per-trade target"><input type="number" placeholder="—" className="form-control" value={targets.overall_tp} onChange={e => setTargets(t => ({ ...t, overall_tp: e.target.value }))} title="Close all legs when the batch's combined profit reaches this ₹" /></Field>
+              <Field label="Daily stop-loss"><input type="number" placeholder="—" className="form-control" value={targets.daily_sl} onChange={e => setTargets(t => ({ ...t, daily_sl: e.target.value }))} title="Stop trading for the day at this ₹ loss" /></Field>
+              <Field label="Daily target"><input type="number" placeholder="—" className="form-control" value={targets.daily_tp} onChange={e => setTargets(t => ({ ...t, daily_tp: e.target.value }))} title="Stop trading for the day at this ₹ profit" /></Field>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>Per-trade closes the current batch; daily stops all trading for the rest of that day. Leave blank to disable.</div>
+          </div>
         </div>
       </div>
 

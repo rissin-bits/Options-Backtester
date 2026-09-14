@@ -76,9 +76,11 @@ class BacktestConfig:
     market_open: time = time(9, 15)
     market_close: time = time(15, 30)
 
-    # Risk management
-    max_loss_per_day: Optional[float] = None  # Absolute ₹ limit
-    max_loss_per_day_pct: Optional[float] = None  # % of capital
+    # Risk management (daily). Hitting either limit stops trading for the day.
+    max_loss_per_day: Optional[float] = None       # absolute ₹ loss limit
+    max_loss_per_day_pct: Optional[float] = None   # loss as % of capital
+    max_profit_per_day: Optional[float] = None     # absolute ₹ profit target
+    max_profit_per_day_pct: Optional[float] = None  # profit as % of capital
 
 
 # ──────────────────────────────────────────────────────────────
@@ -234,6 +236,7 @@ class BacktestEngine:
         self.current_day: Optional[date] = None
         self.day_trade_count = 0
         self.day_hit_loss_limit = False
+        self._day_stop_reason = "daily_loss_limit"
         self.peak_portfolio = config.initial_capital
         self.max_drawdown = 0.0
 
@@ -359,11 +362,10 @@ class BacktestEngine:
                     days_to_expiry=dte,
                 )
 
-                # Check daily loss limit
+                # Daily limit already hit today → flatten and skip (no new trades)
                 if self.day_hit_loss_limit:
-                    # Only allow exits
                     if self.positions:
-                        self._square_off_all(data, ts_pd, "daily_loss_limit")
+                        self._square_off_all(data, ts_pd, self._day_stop_reason)
                     continue
 
                 # Call strategy
@@ -386,14 +388,19 @@ class BacktestEngine:
                 if dd > self.max_drawdown:
                     self.max_drawdown = dd
 
-                # Check daily loss limit
+                # Daily limits — hitting a loss cap OR a profit target ends the
+                # trading day (positions are flattened on the next candle).
+                day_pct = (self.day_pnl / self.capital) * 100 if self.capital else 0
                 if self.config.max_loss_per_day and self.day_pnl <= -abs(self.config.max_loss_per_day):
-                    self.day_hit_loss_limit = True
-                    log.info(f"Daily loss limit hit: ₹{self.day_pnl:.0f}")
-                if self.config.max_loss_per_day_pct:
-                    pct_loss = (self.day_pnl / self.capital) * 100
-                    if pct_loss <= -abs(self.config.max_loss_per_day_pct):
-                        self.day_hit_loss_limit = True
+                    self.day_hit_loss_limit = True; self._day_stop_reason = "daily_loss_limit"
+                elif self.config.max_loss_per_day_pct and day_pct <= -abs(self.config.max_loss_per_day_pct):
+                    self.day_hit_loss_limit = True; self._day_stop_reason = "daily_loss_limit"
+                elif self.config.max_profit_per_day and self.day_pnl >= abs(self.config.max_profit_per_day):
+                    self.day_hit_loss_limit = True; self._day_stop_reason = "daily_profit_target"
+                elif self.config.max_profit_per_day_pct and day_pct >= abs(self.config.max_profit_per_day_pct):
+                    self.day_hit_loss_limit = True; self._day_stop_reason = "daily_profit_target"
+                if self.day_hit_loss_limit:
+                    log.info(f"Daily limit hit ({self._day_stop_reason}): ₹{self.day_pnl:.0f}")
 
                 processed += 1
                 if progress_callback and processed % 100 == 0:
@@ -714,6 +721,7 @@ class BacktestEngine:
         self.day_pnl = 0.0
         self.day_trade_count = 0
         self.day_hit_loss_limit = False
+        self._day_stop_reason = "daily_loss_limit"
 
         # Build a minimal context for on_day_start
         first_ts = pd.Timestamp(day_timestamps[0])

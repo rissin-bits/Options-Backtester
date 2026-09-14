@@ -444,6 +444,8 @@ def _build_custom_strategy(cfg):
         re_entry=cfg.re_entry,
         entry_condition=entry_cond,
         exit_condition=exit_cond,
+        overall_stop_loss=cfg.overall_stop_loss,
+        overall_take_profit=cfg.overall_take_profit,
     )
 
 
@@ -500,6 +502,8 @@ async def run_backtest(request: BacktestRequest):
             commission_per_lot=request.commission_per_lot,
             max_loss_per_day=request.max_loss_per_day,
             max_loss_per_day_pct=request.max_loss_per_day_pct,
+            max_profit_per_day=request.max_profit_per_day,
+            max_profit_per_day_pct=request.max_profit_per_day_pct,
         )
 
         engine = BacktestEngine(config, loader)
@@ -545,6 +549,8 @@ async def ws_backtest(websocket: WebSocket):
             commission_per_lot=request.commission_per_lot,
             max_loss_per_day=request.max_loss_per_day,
             max_loss_per_day_pct=request.max_loss_per_day_pct,
+            max_profit_per_day=request.max_profit_per_day,
+            max_profit_per_day_pct=request.max_profit_per_day_pct,
         )
 
         engine = BacktestEngine(config, loader)
