@@ -398,6 +398,44 @@ def _build_strategy_from_config(config: StrategyConfigModel) -> RuleBasedStrateg
     )
 
 
+def _order_from_leg(leg) -> Order:
+    """Turn a builder LegModel into an engine Order (with per-leg risk)."""
+    opt = OptionType(leg.option_type.value)
+    n = int(leg.strike_offset or 0)
+    if leg.moneyness == "ATM" or n == 0:
+        sel, off = StrikeSelection.ATM, None
+    else:
+        # OTM call = higher strike, OTM put = lower; ITM is the mirror.
+        higher = (opt == OptionType.CE) == (leg.moneyness == "OTM")
+        sel = StrikeSelection.ATM_PLUS_N if higher else StrikeSelection.ATM_MINUS_N
+        off = n
+    return Order(
+        side=Side(leg.side.value),
+        option_type=opt,
+        strike_selection=sel,
+        strike_offset=off,
+        quantity=leg.lots,
+        expiry_selection=leg.expiry_selection,
+        tag=leg.tag,
+        stop_loss_pct=leg.stop_loss_pct,
+        take_profit_pct=leg.take_profit_pct,
+        trailing_sl_pct=leg.trailing_sl_pct,
+        move_to_cost_at_pct=leg.move_to_cost_at_pct,
+    )
+
+
+def _build_custom_strategy(cfg):
+    from backend.custom_strategy import CustomLegStrategy
+    return CustomLegStrategy(
+        name=cfg.name,
+        legs=[_order_from_leg(leg) for leg in cfg.legs],
+        entry_time=cfg.entry_time,
+        square_off_time=cfg.square_off_time,
+        max_entries_per_day=cfg.max_entries_per_day,
+        re_entry=cfg.re_entry,
+    )
+
+
 def _resolve_strategy(request: BacktestRequest):
     """
     Resolve a backtest request to a Strategy.
@@ -410,6 +448,9 @@ def _resolve_strategy(request: BacktestRequest):
     Example strategies are module-level singletons that accumulate per-run state,
     so hand back a deep copy rather than the shared instance.
     """
+    if request.custom_strategy is not None and request.custom_strategy.legs:
+        return _build_custom_strategy(request.custom_strategy)
+
     if request.strategy_id:
         # Ready-made strategies are built from templates so the user's
         # adjustments (request.params) actually take effect.

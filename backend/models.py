@@ -94,6 +94,34 @@ class StrategyConfigModel(BaseModel):
     max_positions: int = 10
 
 
+# ── Custom leg builder (Backtest builder) ──────────────────────
+
+class LegModel(BaseModel):
+    """One leg in the visual builder, with its own risk controls."""
+    side: SideEnum = SideEnum.SELL
+    option_type: OptionTypeEnum = OptionTypeEnum.CE
+    moneyness: str = "ATM"            # "ATM" | "OTM" | "ITM"
+    strike_offset: int = 0            # strikes away from ATM (for OTM/ITM)
+    expiry_selection: str = "nearest"  # "nearest" | "next" | "monthly"
+    lots: int = 1
+    # Per-leg risk (percent of entry premium; None = disabled)
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    trailing_sl_pct: Optional[float] = None
+    move_to_cost_at_pct: Optional[float] = None
+    tag: str = ""
+
+
+class CustomStrategyModel(BaseModel):
+    """A user-built multi-leg strategy assembled in the Backtest builder."""
+    name: str = "Custom Strategy"
+    legs: List[LegModel] = []
+    entry_time: str = "09:20"
+    square_off_time: str = "15:15"
+    max_entries_per_day: int = 1
+    re_entry: bool = False
+
+
 # ──────────────────────────────────────────────────────────────
 # Backtest request / response
 # ──────────────────────────────────────────────────────────────
@@ -106,6 +134,8 @@ class BacktestRequest(BaseModel):
     # the param `key`s from GET /api/strategies/templates. Ignored for inline
     # `strategy` configs.
     params: Optional[Dict[str, Any]] = None
+    # A user-built multi-leg strategy from the Backtest builder.
+    custom_strategy: Optional[CustomStrategyModel] = None
     underlying: str = "NIFTY"
     start_date: str  # "2024-01-01"
     end_date: str     # "2024-03-31"

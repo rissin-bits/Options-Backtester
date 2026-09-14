@@ -329,6 +329,9 @@ class BacktestEngine:
                 # Mark to market (reuse the spot we just computed)
                 self._mark_to_market(chain, data, ts_pd, spot)
 
+                # Per-leg risk exits (each leg's own SL / TP / trailing / move-to-cost)
+                self._check_leg_exits(data, ts_pd)
+
                 # Build indicator snapshot for this timestamp
                 ind_snapshot = self._get_indicator_snapshot(
                     indicator_values, ts_pd
@@ -457,6 +460,10 @@ class BacktestEngine:
                 entry_time=timestamp.to_pydatetime(),
                 tag=order.tag,
                 current_price=price,
+                stop_loss_pct=order.stop_loss_pct,
+                take_profit_pct=order.take_profit_pct,
+                trailing_sl_pct=order.trailing_sl_pct,
+                move_to_cost_at_pct=order.move_to_cost_at_pct,
             )
             self.positions.append(pos)
 
@@ -468,6 +475,39 @@ class BacktestEngine:
             log.debug(f"OPENED: {order.side.value} {pos.quantity}x "
                       f"{order.option_type.value} {strike} {expiry} "
                       f"@ ₹{price:.2f}")
+
+    def _check_leg_exits(self, data: pd.DataFrame, timestamp: pd.Timestamp):
+        """
+        Close individual legs whose own risk controls have triggered.
+
+        Each Position may carry its own stop-loss / take-profit / trailing-stop /
+        move-to-cost (set from the leg it was opened with). This runs every candle
+        after mark-to-market and closes just the legs that breached — unlike a
+        strategy-level SQUARE_OFF_ALL, which closes everything at once.
+        """
+        for pos in list(self.positions):
+            pnl = pos.pnl_pct()
+
+            # Move-to-cost: once profit crosses the trigger, lock the stop at
+            # breakeven so the leg can't turn into a loss.
+            if (pos.move_to_cost_at_pct and not pos.breakeven_locked
+                    and pnl >= pos.move_to_cost_at_pct):
+                pos.breakeven_locked = True
+
+            reason = None
+            if pos.take_profit_pct is not None and pnl >= pos.take_profit_pct:
+                reason = "leg_take_profit"
+            elif pos.breakeven_locked and pnl <= 0:
+                reason = "leg_move_to_cost"
+            elif (pos.trailing_sl_pct is not None
+                  and pos.peak_pnl_pct - pnl >= pos.trailing_sl_pct):
+                reason = "leg_trailing_sl"
+            elif pos.stop_loss_pct is not None and pnl <= -abs(pos.stop_loss_pct):
+                reason = "leg_stop_loss"
+
+            if reason:
+                self._close_position(pos, data, timestamp, reason)
+                self.positions.remove(pos)
 
     def _square_off_all(self, data: pd.DataFrame, timestamp: pd.Timestamp,
                         reason: str = ""):

@@ -85,6 +85,11 @@ class Order:
     # Lets a strategy pick an arbitrary width (e.g. a 5-strike-wide strangle)
     # instead of being limited to the ATM+1 / ATM+2 enum members.
     strike_offset: Optional[int] = None
+    # Per-leg risk controls, enforced by the engine on the resulting Position:
+    stop_loss_pct: Optional[float] = None     # exit this leg at −X% of entry premium
+    take_profit_pct: Optional[float] = None   # exit this leg at +X% of entry premium
+    trailing_sl_pct: Optional[float] = None   # trail the stop by X% behind the peak
+    move_to_cost_at_pct: Optional[float] = None  # once +X% profit, move SL to breakeven
 
 
 @dataclass
@@ -101,10 +106,25 @@ class Position:
     tag: str = ""
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
+    # Per-leg risk (copied from the Order that opened it).
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    trailing_sl_pct: Optional[float] = None
+    move_to_cost_at_pct: Optional[float] = None
+    peak_pnl_pct: float = 0.0        # high-water mark of pnl% (for trailing)
+    breakeven_locked: bool = False   # move-to-cost has fired
 
     @property
     def notional_value(self) -> float:
         return self.entry_price * self.quantity
+
+    def pnl_pct(self) -> float:
+        """Signed P&L as a percent of entry premium (positive = in profit)."""
+        if self.entry_price <= 0:
+            return 0.0
+        if self.side == Side.BUY:
+            return (self.current_price - self.entry_price) / self.entry_price * 100
+        return (self.entry_price - self.current_price) / self.entry_price * 100
 
     def mark_to_market(self, current_price: float):
         self.current_price = current_price
@@ -112,6 +132,7 @@ class Position:
             self.unrealized_pnl = (current_price - self.entry_price) * self.quantity
         else:
             self.unrealized_pnl = (self.entry_price - current_price) * self.quantity
+        self.peak_pnl_pct = max(self.peak_pnl_pct, self.pnl_pct())
 
 
 @dataclass

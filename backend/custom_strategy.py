@@ -1,0 +1,88 @@
+"""
+custom_strategy.py — user-built multi-leg strategies for the Backtest builder.
+
+Unlike the ready-made templates (fixed shapes with a few knobs), a
+CustomLegStrategy is assembled leg-by-leg in the UI: each leg has its own
+side / option type / strike method / expiry / lots and its own risk controls
+(stop-loss, take-profit, trailing, move-to-cost). The engine enforces the
+per-leg risk on the resulting positions; this class only decides *when* to open
+the batch, when to square off, and whether to re-enter.
+"""
+from __future__ import annotations
+
+from datetime import time
+from typing import List, Optional, Union
+
+from backend.strategy import (
+    Strategy, MarketContext, Order, Condition,
+)
+
+
+def _hhmm(value, fallback: time) -> time:
+    if isinstance(value, time):
+        return value
+    try:
+        h, m = str(value).split(":")[:2]
+        return time(int(h), int(m))
+    except (ValueError, AttributeError):
+        return fallback
+
+
+class CustomLegStrategy(Strategy):
+    """A batch of legs entered together, with optional re-entry."""
+
+    def __init__(
+        self,
+        name: str = "Custom Strategy",
+        description: str = "",
+        legs: Optional[List[Order]] = None,
+        entry_time: str = "09:20",
+        square_off_time: str = "15:15",
+        max_entries_per_day: int = 1,
+        re_entry: bool = False,
+        entry_condition: Optional[Condition] = None,
+    ):
+        self.name = name
+        self.description = description
+        self.legs = legs or []
+        self.entry_after = _hhmm(entry_time, time(9, 20))
+        self.square_off = _hhmm(square_off_time, time(15, 15))
+        # Re-entry lets the batch be re-opened after it fully closes, up to the
+        # per-day cap. Without it, one batch per day.
+        self.re_entry = bool(re_entry)
+        self.max_entries = max(1, int(max_entries_per_day)) if re_entry else 1
+        self.entry_condition = entry_condition
+        self._entries_today = 0
+
+    def required_indicators(self):
+        # Any indicators referenced by the (optional) entry condition.
+        if self.entry_condition and hasattr(self.entry_condition, "required_indicators"):
+            return self.entry_condition.required_indicators()
+        return []
+
+    def on_day_start(self, ctx: MarketContext):
+        self._entries_today = 0
+
+    def on_candle(self, ctx: MarketContext) -> Union[List[Order], str, None]:
+        t = ctx.time_of_day
+
+        # End of the trade window → flatten and stop for the day.
+        if t >= self.square_off:
+            return "SQUARE_OFF_ALL" if ctx.positions else None
+
+        # Not yet in the entry window.
+        if t < self.entry_after:
+            return None
+
+        # A batch is already live — leave it to the per-leg risk / square-off.
+        if ctx.positions:
+            return None
+
+        # Flat inside the window: open a (re-)entry if we still have budget.
+        if self._entries_today >= self.max_entries:
+            return None
+        if self.entry_condition is not None and not self.entry_condition.evaluate(ctx):
+            return None
+
+        self._entries_today += 1
+        return list(self.legs)
